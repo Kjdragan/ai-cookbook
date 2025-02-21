@@ -92,8 +92,7 @@ target/
 # Exclude trained models
 models/
 
-# Exclude pyproject.toml
-pyproject.toml
+
 
 # Exclude uv.lock
 uv.lock
