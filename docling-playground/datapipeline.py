@@ -191,16 +191,16 @@ class DataPipeline:
             self.logger.info("Preparing chunks for storage...")
             processed_chunks = [
                 {
-                    "text": chunk.text,
+                    "text": chunk.text or "",  # Ensure non-null
                     "metadata": {
-                        "filename": chunk.meta.origin.filename,
+                        "filename": chunk.meta.origin.filename or file_path.name,
                         "page_numbers": sorted(set(
                             prov.page_no
                             for item in chunk.meta.doc_items
                             for prov in item.prov
-                        )) or None,
-                        "title": chunk.meta.headings[0] if chunk.meta.headings else None,
-                        "doc_type": file_path.suffix[1:],  # Remove leading dot
+                        )) or [0],  # Default to page 0 if no page numbers
+                        "title": chunk.meta.headings[0] if chunk.meta.headings else "",
+                        "doc_type": file_path.suffix[1:] or "unknown",  # Remove leading dot
                         "processed_date": datetime.now(),
                         "source_path": str(file_path)
                     }
@@ -291,10 +291,26 @@ class DataPipeline:
 
     def _setup_database(self):
         """Initialize LanceDB database and table."""
+        # Create database if it doesn't exist
+        os.makedirs("data/lancedb", exist_ok=True)
         self.db = lancedb.connect("data/lancedb")
-        self.embedding_func = get_registry().get("openai").create(
-            name="text-embedding-3-large"
-        )
+        
+        # Define schema with non-nullable fields
+        schema = {
+            "text": "string",  # The chunk text
+            "metadata": {
+                "type": "struct",
+                "fields": {
+                    "filename": "string",
+                    "page_numbers": "list<int64>",
+                    "title": "string",
+                    "doc_type": "string",
+                    "processed_date": "timestamp[us]",
+                    "source_path": "string"
+                }
+            },
+            "vector": f"float32[1536]"  # For text-embedding-3-large
+        }
         
         # Create table if it doesn't exist
         try:
@@ -303,7 +319,7 @@ class DataPipeline:
         except Exception:
             self.table = self.db.create_table(
                 "documents",
-                schema=Chunks,
+                schema=schema,
                 mode="overwrite"
             )
             self.logger.info("Created new documents table")
