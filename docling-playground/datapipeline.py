@@ -13,7 +13,7 @@ from utils.sitemap import get_sitemap_urls
 from docling.chunking import HybridChunker
 from docling.datamodel.base_models import InputFormat
 from docling.document_converter import PdfFormatOption
-from docling.utils.model_downloader import download_models
+from docling.utils.model_downloader import download_models, download_layout_model, download_tableformer_model, download_picture_classifier_model, download_code_formula_model, download_smolvlm_model, download_easyocr_models
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from utils.tokenizer import OpenAITokenizerWrapper
@@ -25,35 +25,63 @@ from docling.datamodel.pipeline_options import (
 )
 
 import lancedb
-from lancedb.pydantic import LanceModel
+from lancedb.pydantic import LanceModel, Vector, FixedSizeListMixin
 from lancedb.embeddings import EmbeddingFunctionRegistry
 import numpy as np
-from pydantic import Field
+from pydantic import Field, ConfigDict
 
 class ChunkMetadata(LanceModel):
     """Metadata for document chunks."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     filename: str
     page_numbers: List[int]
     title: str
     doc_type: str
     processed_date: datetime
     source_path: str
+    chunk_id: str  # Unique identifier for each chunk
 
 class ProcessedChunk(LanceModel):
     """Schema for document chunks in LanceDB with automatic embedding support."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     metadata: ChunkMetadata
-    text: str  # Source field for embedding, must not be None
-    vector: List[float] = Field(default_factory=lambda: [0.0] * 1536)  # 1536-dim vector for OpenAI text-embedding-3-small
+    text: str = None  # Will be set by embedding function
+    vector: Vector = None  # Will be set by embedding function
 
-    class Config:
-        """Configure the model to use the embedding function."""
-        @classmethod
-        def get_source_field(cls):
-            return "text"  # Field to use as source for embedding
+    @classmethod
+    def with_embeddings(cls, func):
+        """Create a new schema with the given embedding function."""
+        # Create a new class with the embedding function fields
+        return type(cls.__name__, (cls,), {
+            "__annotations__": {
+                "text": str,
+                "vector": Vector(func.ndims())
+            },
+            "text": func.SourceField(),
+            "vector": func.VectorField()
+        })
 
-        @classmethod
-        def get_vector_field(cls):
-            return "vector"  # Field to store the embedding
+    @classmethod
+    def get_arrow_schema(cls):
+        """Get the Arrow schema for this model."""
+        return pa.schema([
+            pa.field("metadata", pa.struct([
+                pa.field("filename", pa.string()),
+                pa.field("page_numbers", pa.list_(pa.int64())),
+                pa.field("title", pa.string()),
+                pa.field("doc_type", pa.string()),
+                pa.field("processed_date", pa.timestamp('ns')),
+                pa.field("source_path", pa.string()),
+                pa.field("chunk_id", pa.string())
+            ])),
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 1536))  # Fixed size for text-embedding-3-small
+        ])
+
+    def __init__(self, **data):
+        super().__init__(**data)
 
 class Chunks(LanceModel):
     """Schema for document chunks in LanceDB."""
@@ -141,35 +169,54 @@ class DataPipeline:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def _warmup_models(self, artifacts_path):
         """Download and prefetch required models with retry logic."""
-        try:
-            # Ensure the artifacts directory exists
-            os.makedirs(artifacts_path, exist_ok=True)
+        # Create cache directory if it doesn't exist
+        os.makedirs(artifacts_path, exist_ok=True)
+        
+        # Create a cache marker file to track downloaded models
+        cache_marker = os.path.join(artifacts_path, ".model_cache_complete")
+        
+        # Skip download if cache exists and is valid
+        if os.path.exists(cache_marker):
+            self.logger.info("Using cached models from: %s", artifacts_path)
+            return
             
-            # Download models if they're not already present
-            download_models()
-            self.logger.info(f"Models downloaded successfully to: {artifacts_path}")
+        self.logger.info("Downloading layout model...")
+        download_layout_model(artifacts_path)
+        
+        self.logger.info("Downloading tableformer model...")
+        download_tableformer_model(artifacts_path)
+        
+        self.logger.info("Downloading picture classifier model...")
+        download_picture_classifier_model(artifacts_path)
+        
+        self.logger.info("Downloading code formula model...")
+        download_code_formula_model(artifacts_path)
+        
+        self.logger.info("Downloading SmolVlm model...")
+        try:
+            download_smolvlm_model(artifacts_path)
         except Exception as e:
-            self.logger.error(f"Error during model warmup: {str(e)}")
-            raise
+            self.logger.warning(f"SmolVLM model download failed, using cached version if available: {str(e)}")
+            
+        self.logger.info("Downloading easyocr models...")
+        download_easyocr_models(artifacts_path)
+        
+        self.logger.info(f"Models downloaded successfully to: {artifacts_path}")
+        
+        # Create cache marker after successful download
+        with open(cache_marker, 'w') as f:
+            f.write(str(datetime.now()))
 
-    def verify_lancedb_chunks(self, expected_count: Optional[int] = None, source_path: Optional[str] = None) -> bool:
+    def verify_lancedb_chunks(self, expected_count: Optional[int] = None) -> bool:
         """Verify that chunks were properly stored in LanceDB.
         
         Args:
             expected_count: Optional number of chunks expected
-            source_path: Optional source path to check for existing documents
             
         Returns:
             bool: True if verification passed
         """
         try:
-            if source_path:
-                # Check for existing chunks from this document
-                existing = self.table.search().where(f"metadata.source_path = '{source_path}'").to_list()
-                if existing:
-                    self.logger.warning(f"Document {source_path} has already been processed with {len(existing)} chunks")
-                    return False
-
             # Check if table exists and has data
             count = len(self.table)
             self.logger.info(f"Found {count} chunks in LanceDB table")
@@ -189,7 +236,10 @@ class DataPipeline:
                         self.logger.error(f"Missing required field: {field}")
                         return False
                         
-            return True
+                self.logger.info("Chunk verification passed")
+                return True
+            
+            return count > 0
             
         except Exception as e:
             self.logger.error(f"Error verifying chunks: {str(e)}")
@@ -213,7 +263,7 @@ class DataPipeline:
             # Prepare chunks for LanceDB
             self.logger.info("Preparing chunks for storage...")
             processed_chunks = [
-                ProcessedChunk(
+                ProcessedChunk.with_embeddings(self.embedding_func)(
                     text=chunk.text or "",  # Ensure non-null
                     metadata=ChunkMetadata(
                         filename=chunk.meta.origin.filename or file_path.name,
@@ -225,18 +275,20 @@ class DataPipeline:
                         title=chunk.meta.headings[0] if chunk.meta.headings else "",
                         doc_type=file_path.suffix[1:] or "unknown",  # Remove leading dot
                         processed_date=datetime.now(),
-                        source_path=str(file_path)
-                    )
+                        source_path=str(file_path),
+                        chunk_id=str(i)  # Assign a unique chunk ID
+                    ),
+                    vector=np.zeros(self.embedding_func.ndims()).tolist()  # Initialize vector, will be replaced by embedding function
                 )
-                for chunk in chunks
+                for i, chunk in enumerate(chunks)
             ]
             
             # Add chunks to LanceDB - it will handle embeddings automatically
             self.logger.info("Storing chunks in LanceDB...")
-            self.table.add(processed_chunks)
+            self.table.add(processed_chunks, mode="replace", id_field="metadata.chunk_id")
             
             # Verify storage
-            if self.verify_lancedb_chunks(len(processed_chunks), str(file_path)):
+            if self.verify_lancedb_chunks(len(processed_chunks)):
                 self.logger.info(f"Successfully processed and stored: {file_path.name}")
             else:
                 raise Exception("Chunk verification failed")
@@ -296,7 +348,7 @@ class DataPipeline:
                     continue
                     
                 # Create ProcessedChunk instance with metadata
-                processed_chunk = ProcessedChunk(
+                processed_chunk = ProcessedChunk.with_embeddings(self.embedding_func)(
                     text=chunk.text,  # Now we know it's not empty
                     metadata=ChunkMetadata(
                         filename=base_name + ".pdf",
@@ -308,17 +360,22 @@ class DataPipeline:
                         title=chunk.meta.headings[0] if chunk.meta.headings else "",
                         doc_type="pdf",
                         processed_date=datetime.now(),
-                        source_path=url
-                    )
+                        source_path=url,
+                        chunk_id=str(i)  # Assign a unique chunk ID
+                    ),
+                    vector=np.zeros(self.embedding_func.ndims()).tolist()  # Initialize vector, will be replaced by embedding function
                 )
                 processed_chunks.append(processed_chunk)
         
         # Add chunks to LanceDB - embeddings will be computed automatically
         self.logger.info("Storing chunks in LanceDB...")
-        self.table.add(processed_chunks)
+        self.table.add(
+            processed_chunks,
+            mode="overwrite"  # Use overwrite mode to replace existing data
+        )
         
         # Verify storage
-        if self.verify_lancedb_chunks(len(processed_chunks), url):
+        if self.verify_lancedb_chunks(len(processed_chunks)):
             self.logger.info(f"Successfully processed and stored {len(processed_chunks)} chunks")
         else:
             self.logger.warning("Chunk verification failed")
@@ -365,27 +422,47 @@ class DataPipeline:
 
     def _setup_database(self):
         """Initialize LanceDB database and table."""
-        # Create database if it doesn't exist
+        # Create database directory if it doesn't exist
         os.makedirs("data/lancedb", exist_ok=True)
+        
+        # Connect to database
         self.db = lancedb.connect("data/lancedb")
         
-        # Get OpenAI embedding function with text-embedding-3-small model (1,536 dimensions)
+        # Get OpenAI embedding function from registry
         self.embedding_func = EmbeddingFunctionRegistry.get_instance().get("openai").create(
-            name="text-embedding-3-small"
+            name="text-embedding-3-small",
+            max_retries=3  # Reduce retries for development
         )
         
-        # Create table if it doesn't exist
-        try:
-            self.table = self.db.open_table("documents")
-            self.logger.info("Connected to existing documents table")
-        except Exception:
-            self.table = self.db.create_table(
-                "documents",
-                schema=ProcessedChunk,
-                embedding_functions={"text": self.embedding_func},
-                mode="overwrite"
-            )
-            self.logger.info("Created new documents table")
+        # Create table schema with embedding function
+        table_schema = ProcessedChunk.with_embeddings(self.embedding_func)
+        
+        # Initialize with an empty chunk to establish schema
+        empty_metadata = ChunkMetadata(
+            filename="",
+            page_numbers=[],
+            title="",
+            doc_type="",
+            processed_date=datetime.now(),
+            source_path="",
+            chunk_id="init"
+        )
+        
+        # Create empty chunk with zero vector
+        empty_chunk = table_schema(
+            text="",
+            metadata=empty_metadata,
+            vector=np.zeros(self.embedding_func.ndims()).tolist()  # Initialize with zeros
+        )
+        
+        # Create table with schema (this will create if not exists)
+        self.table = self.db.create_table(
+            "documents",
+            data=[empty_chunk],
+            schema=table_schema,
+            mode="overwrite"  # Force create new table
+        )
+        self.logger.info("Initialized documents table")
 
     def queue_document(self, file_path: str):
         """Queue a document for processing."""
