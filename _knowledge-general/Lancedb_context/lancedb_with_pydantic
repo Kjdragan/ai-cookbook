@@ -1,0 +1,486 @@
+LanceDB
+Pydantic
+
+
+
+ lancedb/lancedb
+Home
+LanceDB
+🏃🏼‍♂️ Quick start
+📚 Concepts
+Vector search
+Indexing
+IVFPQ
+HNSW
+Storage
+Data management
+🔨 Guides
+Working with tables
+Building a vector index
+Vector Search
+Full-text search (native)
+Full-text search (tantivy-based)
+Building a scalar index
+Hybrid search
+Overview
+Comparing Rerankers
+Airbnb financial data example
+RAG
+Vanilla RAG
+Multi-head RAG
+Corrective RAG
+Agentic RAG
+Graph RAG
+Self RAG
+Adaptive RAG
+SFR RAG
+Advanced Techniques
+HyDE
+FLARE
+Reranking
+Quickstart
+Cohere Reranker
+Linear Combination Reranker
+Reciprocal Rank Fusion Reranker
+Cross Encoder Reranker
+ColBERT Reranker
+Jina Reranker
+OpenAI Reranker
+AnswerDotAi Rerankers
+Voyage AI Rerankers
+Building Custom Rerankers
+Example
+Filtering
+Versioning & Reproducibility
+sync API
+async API
+Configuring Storage
+Migration Guide
+Tuning retrieval performance
+Choosing right query type
+Reranking
+Embedding fine-tuning
+🧬 Managing embeddings
+Understand Embeddings
+Get Started
+Embedding functions
+Available models
+Overview
+Text Embedding Functions
+Sentence Transformers
+Huggingface Embedding Models
+Ollama Embeddings
+OpenAI Embeddings
+Instructor Embeddings
+Gemini Embeddings
+Cohere Embeddings
+Jina Embeddings
+AWS Bedrock Text Embedding Functions
+IBM watsonx.ai Embeddings
+Voyage AI Embeddings
+Multimodal Embedding Functions
+OpenClip embeddings
+Imagebind embeddings
+Jina Embeddings
+User-defined embedding functions
+Example: Multi-lingual semantic search
+Example: MultiModal CLIP Embeddings
+🔌 Integrations
+Tools and data formats
+Pandas and PyArrow
+Polars
+DuckDB
+LangChain
+LangChain 🔗
+LangChain demo
+LangChain JS/TS 🔗
+LlamaIndex 🦙
+LlamaIndex docs
+LlamaIndex demo
+Pydantic
+Schema
+pydantic_to_schema
+Vector Field
+Vector
+Type Conversion
+Voxel51
+PromptTools
+dlt
+phidata
+🎯 Examples
+Overview
+🐍 Python
+Overview
+Build From Scratch
+Multimodal
+Rag
+Vector Search
+Chatbot
+Evaluation
+AI Agent
+Recommender System
+Miscellaneous
+Serverless QA Bot with S3 and Lambda
+Serverless QA Bot with Modal
+👾 JavaScript
+Overview
+Serverless Website Chatbot
+YouTube Transcript Search
+TransformersJS Embedding Search
+🦀 Rust
+Overview
+📓 Studies
+↗Improve retrievers with hybrid search and reranking
+💭 FAQs
+🔍 Troubleshooting
+⚙️ API reference
+🐍 Python
+👾 JavaScript (vectordb)
+👾 JavaScript (lancedb)
+🦀 Rust
+☁️ LanceDB Cloud
+Overview
+API reference
+🐍 Python
+👾 JavaScript
+REST API
+FAQs
+Quick start
+Concepts
+Vector search
+Indexing
+IVFPQ
+HNSW
+Storage
+Data management
+Guides
+Working with tables
+Building an ANN index
+Vector Search
+Full-text search (native)
+Full-text search (tantivy-based)
+Building a scalar index
+Hybrid search
+Overview
+Comparing Rerankers
+Example - Airbnb financial data search
+RAG
+Vanilla RAG
+Multi-head RAG
+Corrective RAG
+Agentic RAG
+Graph RAG
+Self RAG
+Adaptive RAG
+SFR RAG
+Advanced Techniques
+HyDE
+FLARE
+Reranking
+Quickstart
+Cohere Reranker
+Linear Combination Reranker
+Reciprocal Rank Fusion Reranker
+Cross Encoder Reranker
+ColBERT Reranker
+Jina Reranker
+OpenAI Reranker
+AnswerDotAi Rerankers
+Building Custom Rerankers
+Example - Improve Retrievers using Rerankers & Hybrid search
+Filtering
+Versioning & Reproducibility
+Sync API
+Async API
+Configuring Storage
+Migration Guide
+Tuning retrieval performance
+Choosing right query type
+Reranking
+Embedding fine-tuning
+Managing Embeddings
+Understand Embeddings
+Get Started
+Embedding functions
+Available models
+Overview
+Text Embedding Functions
+Sentence Transformers
+Huggingface Embedding Models
+Ollama Embeddings
+OpenAI Embeddings
+Instructor Embeddings
+Gemini Embeddings
+Cohere Embeddings
+Jina Embeddings
+AWS Bedrock Text Embedding Functions
+IBM watsonx.ai Embeddings
+Multimodal Embedding Functions
+OpenClip embeddings
+Imagebind embeddings
+Jina Embeddings
+User-defined embedding functions
+Example - Multi-lingual semantic search
+Example - MultiModal CLIP Embeddings
+Integrations
+Overview
+Pandas and PyArrow
+Polars
+DuckDB
+LangChain 🦜️🔗↗
+LangChain.js 🦜️🔗↗
+LlamaIndex 🦙↗
+Pydantic
+Schema
+pydantic_to_schema
+Vector Field
+Vector
+Type Conversion
+Voxel51
+PromptTools
+dlt
+phidata
+Examples
+Example projects and recipes
+🐍 Python
+Overview
+Build From Scratch
+Multimodal
+Rag
+Vector Search
+Chatbot
+Evaluation
+AI Agent
+Recommender System
+Miscellaneous
+Serverless QA Bot with S3 and Lambda
+Serverless QA Bot with Modal
+👾 JavaScript
+Overview
+Serverless Website Chatbot
+YouTube Transcript Search
+TransformersJS Embedding Search
+🦀 Rust
+Overview
+Studies
+Overview
+↗Improve retrievers with hybrid search and reranking
+API reference
+Overview
+Python
+Javascript (vectordb)
+Javascript (lancedb)
+Rust
+LanceDB Cloud
+Overview
+API reference
+🐍 Python
+👾 JavaScript
+REST API
+FAQs
+Pydantic
+Pydantic is a data validation library in Python. LanceDB integrates with Pydantic for schema inference, data ingestion, and query result casting.
+
+Schema
+LanceDB supports to create Apache Arrow Schema from a Pydantic BaseModel via pydantic_to_schema() method.
+
+lancedb.pydantic.pydantic_to_schema
+
+pydantic_to_schema(model: Type[BaseModel
+]) -> Schema
+Convert a Pydantic model to a PyArrow Schema.
+
+Parameters:
+
+model (Type[BaseModel]) – The Pydantic BaseModel to convert to Arrow Schema.
+Returns:
+
+Schema –
+Examples:
+
+
+>>> from typing import List, Optional
+>>> import pydantic
+>>> from lancedb.pydantic import pydantic_to_schema
+>>> class FooModel(pydantic.BaseModel):
+...     id: int
+...     s: str
+...     vec: List[float]
+...     li: List[int]
+...
+>>> schema = pydantic_to_schema(FooModel)
+>>> assert schema == pa.schema([
+...     pa.field("id", pa.int64(), False),
+...     pa.field("s", pa.utf8(), False),
+...     pa.field("vec", pa.list_(pa.float64()), False),
+...     pa.field("li", pa.list_(pa.int64()), False),
+... ])
+Source code in lancedb/pydantic.py
+
+def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
+    """Convert a Pydantic model to a PyArrow Schema.
+
+    Parameters
+    ----------
+    model : Type[pydantic.BaseModel]
+        The Pydantic BaseModel to convert to Arrow Schema.
+
+    Returns
+    -------
+    pyarrow.Schema
+
+    Examples
+    --------
+
+    >>> from typing import List, Optional
+    >>> import pydantic
+    >>> from lancedb.pydantic import pydantic_to_schema
+    >>> class FooModel(pydantic.BaseModel):
+    ...     id: int
+    ...     s: str
+    ...     vec: List[float]
+    ...     li: List[int]
+    ...
+    >>> schema = pydantic_to_schema(FooModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("s", pa.utf8(), False),
+    ...     pa.field("vec", pa.list_(pa.float64()), False),
+    ...     pa.field("li", pa.list_(pa.int64()), False),
+    ... ])
+    """
+    fields = _pydantic_model_to_fields(model)
+    return pa.schema(fields)
+Vector Field
+LanceDB provides a Vector(dim) method to define a vector Field in a Pydantic Model.
+
+lancedb.pydantic.Vector
+
+Vector(dim: int, value_type: DataType = pa.float32(), nullable: bool = True) -> Type[FixedSizeListMixin]
+Pydantic Vector Type.
+
+Warning
+
+Experimental feature.
+
+Parameters:
+
+dim (int) – The dimension of the vector.
+value_type (DataType, default: float32() ) – The value type of the vector, by default pa.float32()
+nullable (bool, default: True ) – Whether the vector is nullable, by default it is True.
+Examples:
+
+
+>>> import pydantic
+>>> from lancedb.pydantic import Vector
+...
+>>> class MyModel(pydantic.BaseModel):
+...     id: int
+...     url: str
+...     embeddings: Vector(768)
+>>> schema = pydantic_to_schema(MyModel)
+>>> assert schema == pa.schema([
+...     pa.field("id", pa.int64(), False),
+...     pa.field("url", pa.utf8(), False),
+...     pa.field("embeddings", pa.list_(pa.float32(), 768))
+... ])
+Source code in lancedb/pydantic.py
+
+def Vector(
+    dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
+) -> Type[FixedSizeListMixin]:
+    """Pydantic Vector Type.
+
+    !!! warning
+        Experimental feature.
+
+    Parameters
+    ----------
+    dim : int
+        The dimension of the vector.
+    value_type : pyarrow.DataType, optional
+        The value type of the vector, by default pa.float32()
+    nullable : bool, optional
+        Whether the vector is nullable, by default it is True.
+
+    Examples
+    --------
+
+    >>> import pydantic
+    >>> from lancedb.pydantic import Vector
+    ...
+    >>> class MyModel(pydantic.BaseModel):
+    ...     id: int
+    ...     url: str
+    ...     embeddings: Vector(768)
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("url", pa.utf8(), False),
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
+    ... ])
+    """
+
+    # TODO: make a public parameterized type.
+    class FixedSizeList(list, FixedSizeListMixin):
+        def __repr__(self):
+            return f"FixedSizeList(dim={dim})"
+
+        @staticmethod
+        def nullable() -> bool:
+            return nullable
+
+        @staticmethod
+        def dim() -> int:
+            return dim
+
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return value_type
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            return core_schema.no_info_after_validator_function(
+                cls,
+                core_schema.list_schema(
+                    min_length=dim,
+                    max_length=dim,
+                    items_schema=core_schema.float_schema(),
+                ),
+            )
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v1
+        @classmethod
+        def validate(cls, v):
+            if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
+                raise TypeError("A list of numbers or numpy.ndarray is needed")
+            return cls(v)
+
+        if PYDANTIC_VERSION.major < 2:
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any]):
+                field_schema["items"] = {"type": "number"}
+                field_schema["maxItems"] = dim
+                field_schema["minItems"] = dim
+
+    return FixedSizeList
+Type Conversion
+LanceDB automatically convert Pydantic fields to Apache Arrow DataType.
+
+Current supported type conversions:
+
+Pydantic Field Type	PyArrow Data Type
+int	pyarrow.int64
+float	pyarrow.float64
+bool	pyarrow.bool
+str	pyarrow.utf8()
+list	pyarrow.List
+BaseModel	pyarrow.Struct
+Vector(n)	pyarrow.FixedSizeList(float32, n)
