@@ -4,7 +4,7 @@ import time
 import logging
 import pyarrow as pa
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Type
+from typing import List, Dict, Any, Optional, Type, Union
 from pathlib import Path
 
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -26,7 +26,9 @@ from docling.datamodel.pipeline_options import (
 
 import lancedb
 from lancedb.pydantic import LanceModel
+from lancedb.embeddings import EmbeddingFunctionRegistry
 import numpy as np
+from pydantic import Field
 
 class ChunkMetadata(LanceModel):
     """Metadata for document chunks."""
@@ -40,8 +42,8 @@ class ChunkMetadata(LanceModel):
 class ProcessedChunk(LanceModel):
     """Schema for document chunks in LanceDB with automatic embedding support."""
     metadata: ChunkMetadata
-    text: str  # Will be used as source for embedding
-    vector: Optional[List[float]] = None  # Will store the embedding vector
+    text: str  # Source field for embedding, must not be None
+    vector: List[float] = Field(default_factory=lambda: [0.0] * 1536)  # 1536-dim vector for OpenAI text-embedding-3-small
 
     class Config:
         """Configure the model to use the embedding function."""
@@ -150,16 +152,24 @@ class DataPipeline:
             self.logger.error(f"Error during model warmup: {str(e)}")
             raise
 
-    def verify_lancedb_chunks(self, expected_count: Optional[int] = None) -> bool:
+    def verify_lancedb_chunks(self, expected_count: Optional[int] = None, source_path: Optional[str] = None) -> bool:
         """Verify that chunks were properly stored in LanceDB.
         
         Args:
             expected_count: Optional number of chunks expected
+            source_path: Optional source path to check for existing documents
             
         Returns:
             bool: True if verification passed
         """
         try:
+            if source_path:
+                # Check for existing chunks from this document
+                existing = self.table.search().where(f"metadata.source_path = '{source_path}'").to_list()
+                if existing:
+                    self.logger.warning(f"Document {source_path} has already been processed with {len(existing)} chunks")
+                    return False
+
             # Check if table exists and has data
             count = len(self.table)
             self.logger.info(f"Found {count} chunks in LanceDB table")
@@ -179,10 +189,7 @@ class DataPipeline:
                         self.logger.error(f"Missing required field: {field}")
                         return False
                         
-                self.logger.info("Chunk verification passed")
-                return True
-            
-            return count > 0
+            return True
             
         except Exception as e:
             self.logger.error(f"Error verifying chunks: {str(e)}")
@@ -229,7 +236,7 @@ class DataPipeline:
             self.table.add(processed_chunks)
             
             # Verify storage
-            if self.verify_lancedb_chunks(len(processed_chunks)):
+            if self.verify_lancedb_chunks(len(processed_chunks), str(file_path)):
                 self.logger.info(f"Successfully processed and stored: {file_path.name}")
             else:
                 raise Exception("Chunk verification failed")
@@ -284,9 +291,13 @@ class DataPipeline:
             self.logger.info(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1}")
             
             for chunk in batch:
+                # Skip empty chunks
+                if not chunk.text:
+                    continue
+                    
                 # Create ProcessedChunk instance with metadata
                 processed_chunk = ProcessedChunk(
-                    text=chunk.text or "",  # Ensure non-null
+                    text=chunk.text,  # Now we know it's not empty
                     metadata=ChunkMetadata(
                         filename=base_name + ".pdf",
                         page_numbers=sorted(set(
@@ -307,7 +318,7 @@ class DataPipeline:
         self.table.add(processed_chunks)
         
         # Verify storage
-        if self.verify_lancedb_chunks(len(processed_chunks)):
+        if self.verify_lancedb_chunks(len(processed_chunks), url):
             self.logger.info(f"Successfully processed and stored {len(processed_chunks)} chunks")
         else:
             self.logger.warning("Chunk verification failed")
@@ -358,9 +369,9 @@ class DataPipeline:
         os.makedirs("data/lancedb", exist_ok=True)
         self.db = lancedb.connect("data/lancedb")
         
-        # Get Jina embedding function
-        self.embedding_func = lancedb.EmbeddingFunctionRegistry.get_instance().get("jina").create(
-            name="jina-clip-v2"
+        # Get OpenAI embedding function with text-embedding-3-small model (1,536 dimensions)
+        self.embedding_func = EmbeddingFunctionRegistry.get_instance().get("openai").create(
+            name="text-embedding-3-small"
         )
         
         # Create table if it doesn't exist
@@ -371,7 +382,7 @@ class DataPipeline:
             self.table = self.db.create_table(
                 "documents",
                 schema=ProcessedChunk,
-                embedding_functions={"text": self.embedding_func},  # Map to source field
+                embedding_functions={"text": self.embedding_func},
                 mode="overwrite"
             )
             self.logger.info("Created new documents table")
