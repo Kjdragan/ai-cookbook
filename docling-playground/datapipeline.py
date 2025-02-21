@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import pyarrow as pa
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -25,6 +26,7 @@ from utils.tokenizer import OpenAITokenizerWrapper
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 from datetime import datetime
+from pydantic import Field
 
 class ChunkMetadata(LanceModel):
     """Metadata for document chunks.
@@ -105,15 +107,15 @@ class DataPipeline:
         # Initialize document monitoring
         self._setup_document_monitoring()
         
-        # Initialize LanceDB
+        # Initialize database and chunker
         self._setup_database()
         
-        # Initialize chunker
+        # Initialize chunker with OpenAI tokenizer
         self.tokenizer = OpenAITokenizerWrapper()
         self.chunker = HybridChunker(
             tokenizer=self.tokenizer,
             max_tokens=8191,  # text-embedding-3-large's maximum context length
-            merge_peers=True
+            merge_peers=True  # Merge undersized successive chunks with same headings
         )
         
         init_time = time.time() - self.init_start_time
@@ -208,7 +210,7 @@ class DataPipeline:
                 for chunk in chunks
             ]
             
-            # Add chunks to LanceDB (automatic embedding)
+            # Add chunks to LanceDB - embeddings will be generated automatically
             self.logger.info("Storing chunks in LanceDB...")
             self.table.add(processed_chunks)
             
@@ -295,22 +297,17 @@ class DataPipeline:
         os.makedirs("data/lancedb", exist_ok=True)
         self.db = lancedb.connect("data/lancedb")
         
-        # Define schema with non-nullable fields
-        schema = {
-            "text": "string",  # The chunk text
-            "metadata": {
-                "type": "struct",
-                "fields": {
-                    "filename": "string",
-                    "page_numbers": "list<int64>",
-                    "title": "string",
-                    "doc_type": "string",
-                    "processed_date": "timestamp[us]",
-                    "source_path": "string"
-                }
-            },
-            "vector": f"float32[1536]"  # For text-embedding-3-large
-        }
+        # Get OpenAI embedding function
+        self.embedding_func = get_registry().get("openai").create(
+            name="text-embedding-3-large",
+            max_retries=3  # Add retry logic for rate limits
+        )
+        
+        # Define schema with non-nullable fields using PyArrow and embedding function
+        class Documents(LanceModel):
+            text: str = self.embedding_func.SourceField()
+            vector: Vector(self.embedding_func.ndims()) = self.embedding_func.VectorField()
+            metadata: dict = Field(...)  # Required field
         
         # Create table if it doesn't exist
         try:
@@ -319,7 +316,7 @@ class DataPipeline:
         except Exception:
             self.table = self.db.create_table(
                 "documents",
-                schema=schema,
+                schema=Documents,
                 mode="overwrite"
             )
             self.logger.info("Created new documents table")
