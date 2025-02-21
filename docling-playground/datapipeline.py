@@ -3,47 +3,61 @@ import json
 import time
 import logging
 import pyarrow as pa
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Type
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+
 from tenacity import retry, stop_after_attempt, wait_exponential
 from docling.document_converter import DocumentConverter
 from utils.sitemap import get_sitemap_urls
+from docling.chunking import HybridChunker
+from docling.datamodel.base_models import InputFormat
+from docling.document_converter import PdfFormatOption
+from docling.utils.model_downloader import download_models
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from utils.tokenizer import OpenAITokenizerWrapper
 from docling.datamodel.pipeline_options import (
     AcceleratorOptions, 
     AcceleratorDevice, 
     PdfPipelineOptions,
     EasyOcrOptions
 )
-from docling.datamodel.base_models import InputFormat
-from docling.document_converter import PdfFormatOption
-from docling.utils.model_downloader import download_models
-from typing import List, Dict, Any
+
 import lancedb
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-from docling.chunking import HybridChunker
-from utils.tokenizer import OpenAITokenizerWrapper
-from lancedb.pydantic import LanceModel, Vector
-from lancedb.embeddings import get_registry
-from datetime import datetime
-from pydantic import Field
+from lancedb.pydantic import LanceModel
+import numpy as np
 
 class ChunkMetadata(LanceModel):
-    """Metadata for document chunks.
-    Fields must be in alphabetical order (Pydantic requirement).
-    """
+    """Metadata for document chunks."""
+    filename: str
+    page_numbers: List[int]
+    title: str
     doc_type: str
-    filename: str | None
-    page_numbers: List[int] | None
     processed_date: datetime
     source_path: str
-    title: str | None
+
+class ProcessedChunk(LanceModel):
+    """Schema for document chunks in LanceDB with automatic embedding support."""
+    metadata: ChunkMetadata
+    text: str  # Will be used as source for embedding
+    vector: Optional[List[float]] = None  # Will store the embedding vector
+
+    class Config:
+        """Configure the model to use the embedding function."""
+        @classmethod
+        def get_source_field(cls):
+            return "text"  # Field to use as source for embedding
+
+        @classmethod
+        def get_vector_field(cls):
+            return "vector"  # Field to store the embedding
 
 class Chunks(LanceModel):
     """Schema for document chunks in LanceDB."""
     metadata: ChunkMetadata
     text: str
-    vector: Vector(1536)  # For text-embedding-3-large
+    vector: Optional[List[float]] = None  # Will be set dynamically based on embedding model
 
 class DocumentHandler(FileSystemEventHandler):
     """Handles file system events for document processing."""
@@ -192,25 +206,25 @@ class DataPipeline:
             # Prepare chunks for LanceDB
             self.logger.info("Preparing chunks for storage...")
             processed_chunks = [
-                {
-                    "text": chunk.text or "",  # Ensure non-null
-                    "metadata": {
-                        "filename": chunk.meta.origin.filename or file_path.name,
-                        "page_numbers": sorted(set(
+                ProcessedChunk(
+                    text=chunk.text or "",  # Ensure non-null
+                    metadata=ChunkMetadata(
+                        filename=chunk.meta.origin.filename or file_path.name,
+                        page_numbers=sorted(set(
                             prov.page_no
                             for item in chunk.meta.doc_items
                             for prov in item.prov
                         )) or [0],  # Default to page 0 if no page numbers
-                        "title": chunk.meta.headings[0] if chunk.meta.headings else "",
-                        "doc_type": file_path.suffix[1:] or "unknown",  # Remove leading dot
-                        "processed_date": datetime.now(),
-                        "source_path": str(file_path)
-                    }
-                }
+                        title=chunk.meta.headings[0] if chunk.meta.headings else "",
+                        doc_type=file_path.suffix[1:] or "unknown",  # Remove leading dot
+                        processed_date=datetime.now(),
+                        source_path=str(file_path)
+                    )
+                )
                 for chunk in chunks
             ]
             
-            # Add chunks to LanceDB - embeddings will be generated automatically
+            # Add chunks to LanceDB - it will handle embeddings automatically
             self.logger.info("Storing chunks in LanceDB...")
             self.table.add(processed_chunks)
             
@@ -225,10 +239,11 @@ class DataPipeline:
             raise
 
     def timing_decorator(func):
-        def wrapper(*args, **kwargs):
+        """Decorator to log function execution time."""
+        def wrapper(self, *args, **kwargs):
             self.logger.info(f"Starting {func.__name__}...")
             start_time = time.time()
-            result = func(*args, **kwargs)
+            result = func(self, *args, **kwargs)
             end_time = time.time()
             self.logger.info(f"Processing time for {func.__name__}: {end_time - start_time:.2f} seconds")
             return result
@@ -236,12 +251,15 @@ class DataPipeline:
 
     @timing_decorator
     def process_pdf(self, url):
+        """Process a PDF document through the full pipeline."""
+        # Convert document and get initial outputs
         result = self.converter.convert(url)
         document = result.document
         markdown_output = document.export_to_markdown()
         json_output = document.export_to_dict()
 
         # Save outputs to _processed_output directory
+        os.makedirs('_processed_output', exist_ok=True)
         base_name = os.path.basename(url).replace('.pdf', '')
         markdown_file = os.path.join('_processed_output', f'{base_name}.md')
         json_file = os.path.join('_processed_output', f'{base_name}.json')
@@ -250,6 +268,49 @@ class DataPipeline:
             f.write(markdown_output)
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(json_output, f, indent=4)
+
+        # Process document through chunking pipeline
+        self.logger.info("Processing document through chunking pipeline...")
+        chunks = list(self.chunker.chunk(dl_doc=document))
+        self.logger.info(f"Created {len(chunks)} chunks")
+        
+        # Prepare chunks for LanceDB
+        self.logger.info("Preparing chunks for storage...")
+        processed_chunks = []
+        batch_size = 10  # Process in smaller batches to avoid rate limits
+        
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            self.logger.info(f"Processing batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1}")
+            
+            for chunk in batch:
+                # Create ProcessedChunk instance with metadata
+                processed_chunk = ProcessedChunk(
+                    text=chunk.text or "",  # Ensure non-null
+                    metadata=ChunkMetadata(
+                        filename=base_name + ".pdf",
+                        page_numbers=sorted(set(
+                            prov.page_no
+                            for item in chunk.meta.doc_items
+                            for prov in item.prov
+                        )) or [0],  # Default to page 0 if no page numbers
+                        title=chunk.meta.headings[0] if chunk.meta.headings else "",
+                        doc_type="pdf",
+                        processed_date=datetime.now(),
+                        source_path=url
+                    )
+                )
+                processed_chunks.append(processed_chunk)
+        
+        # Add chunks to LanceDB - embeddings will be computed automatically
+        self.logger.info("Storing chunks in LanceDB...")
+        self.table.add(processed_chunks)
+        
+        # Verify storage
+        if self.verify_lancedb_chunks(len(processed_chunks)):
+            self.logger.info(f"Successfully processed and stored {len(processed_chunks)} chunks")
+        else:
+            self.logger.warning("Chunk verification failed")
 
         return markdown_file, json_file
 
@@ -297,17 +358,10 @@ class DataPipeline:
         os.makedirs("data/lancedb", exist_ok=True)
         self.db = lancedb.connect("data/lancedb")
         
-        # Get OpenAI embedding function
-        self.embedding_func = get_registry().get("openai").create(
-            name="text-embedding-3-large",
-            max_retries=3  # Add retry logic for rate limits
+        # Get Jina embedding function
+        self.embedding_func = lancedb.EmbeddingFunctionRegistry.get_instance().get("jina").create(
+            name="jina-clip-v2"
         )
-        
-        # Define schema with non-nullable fields using PyArrow and embedding function
-        class Documents(LanceModel):
-            text: str = self.embedding_func.SourceField()
-            vector: Vector(self.embedding_func.ndims()) = self.embedding_func.VectorField()
-            metadata: dict = Field(...)  # Required field
         
         # Create table if it doesn't exist
         try:
@@ -316,7 +370,8 @@ class DataPipeline:
         except Exception:
             self.table = self.db.create_table(
                 "documents",
-                schema=Documents,
+                schema=ProcessedChunk,
+                embedding_functions={"text": self.embedding_func},  # Map to source field
                 mode="overwrite"
             )
             self.logger.info("Created new documents table")
