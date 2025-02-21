@@ -25,6 +25,21 @@ converter = DocumentConverter(
     }
 )
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+#EXAMPLES of Various Estractions
 # --------------------------------------------------------------
 # Basic PDF extraction
 # --------------------------------------------------------------
@@ -59,3 +74,4 @@ for result in conv_results_iter:
     if result.document:
         document = result.document
         docs.append(document)
+"""
