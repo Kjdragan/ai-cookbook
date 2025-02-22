@@ -25,6 +25,7 @@ from docling.datamodel.pipeline_options import (
 from utils.tokenizer import OpenAITokenizerWrapper
 from utils.sitemap import get_sitemap_urls
 import lancedb
+from lancedb import vector
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 import numpy as np
@@ -45,6 +46,41 @@ class ChunkMetadata(BaseModel):
     processed_date: str  # Store as ISO format string for compatibility
     source_path: str
     chunk_id: str
+
+class DocumentChunk(BaseModel):
+    text: str
+    metadata: Dict[str, Any]
+    vector: Optional[List[float]] = None
+
+    def to_lance_dict(self) -> Dict[str, Any]:
+        """Convert the Pydantic model to a LanceDB-compatible dictionary."""
+        data = self.model_dump()  # Using model_dump() instead of dict()
+        # Ensure vector is not None for LanceDB
+        if data["vector"] is None:
+            data["vector"] = [0.0] * 3072  # Default vector for text-embedding-3-large
+        
+        # Convert page_numbers to int32 to match schema
+        if "metadata" in data and "page_numbers" in data["metadata"]:
+            data["metadata"]["page_numbers"] = [np.int32(x) for x in data["metadata"]["page_numbers"]]
+            
+        return data
+
+    @classmethod
+    def get_lance_schema(cls) -> pa.Schema:
+        """Get the PyArrow schema for LanceDB storage."""
+        return pa.schema([
+            pa.field("text", pa.string()),
+            pa.field("metadata", pa.struct([
+                pa.field("chunk_id", pa.string()),
+                pa.field("doc_type", pa.string()),
+                pa.field("filename", pa.string()),
+                pa.field("page_numbers", pa.list_(pa.int64())),  # Changed to int64 to match data
+                pa.field("processed_date", pa.string()),
+                pa.field("source_path", pa.string()),
+                pa.field("title", pa.string())
+            ])),
+            pa.field("vector", vector(3072))
+        ])
 
 class ProcessedChunk(LanceModel):
     """A processed document chunk with metadata and embeddings."""
@@ -77,8 +113,9 @@ class DataPipeline:
         """Initialize the document processing pipeline."""
         # Set up logging
         logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            level=logging.DEBUG,  # Change to DEBUG level
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
         )
         self.logger = logging.getLogger(__name__)
         
@@ -126,8 +163,8 @@ class DataPipeline:
             }
         )
         
-        # Initialize document monitoring
-        self._setup_document_monitoring()
+        # Initialize database
+        self.db = lancedb.connect("lancedb")
         
         # Initialize embedding function
         self.logger.info("Initializing embedding function...")
@@ -137,33 +174,6 @@ class DataPipeline:
         self.embedding_func = get_registry().get("openai").create(
             name="text-embedding-3-large",
             api_key=api_key
-        )
-        
-        # Initialize LanceDB
-        self.logger.info("Removing existing database directory: lancedb")
-        if os.path.exists("lancedb"):
-            shutil.rmtree("lancedb")
-        self.db = lancedb.connect("lancedb")
-        
-        # Create table with schema
-        initial_chunk = ProcessedChunk(
-            text="init",
-            metadata=ChunkMetadata(
-                filename="init.txt",
-                page_numbers=[0],
-                title="Init",
-                doc_type="text",
-                processed_date=datetime.now().isoformat(),
-                source_path="",
-                chunk_id="0"
-            ),
-            vector=self.embedding_func.generate_embeddings(["init"])[0]
-        )
-        
-        self.table = self.db.create_table(
-            "documents",
-            data=[initial_chunk.model_dump()],
-            mode="overwrite"
         )
         
         # Initialize tokenizer and chunker
@@ -208,15 +218,15 @@ class DataPipeline:
         """Verify that chunks were properly stored in LanceDB."""
         try:
             # Get all chunks from the table
-            all_chunks = self.table.to_pandas()
+            all_chunks = self.db.get_table("chunks").to_list()
             chunk_count = len(all_chunks)
             self.logger.info(f"Found {chunk_count} chunks in LanceDB table")
             
             # Print diagnostic information for the first chunk
             if chunk_count > 0:
                 self.logger.info("Sample chunk data:")
-                sample_chunk = all_chunks.iloc[0]
-                self.logger.info("Available columns: %s", list(all_chunks.columns))
+                sample_chunk = all_chunks[0]
+                self.logger.info("Available columns: %s", list(all_chunks[0].keys()))
                 self.logger.info("Sample chunk metadata: %s", sample_chunk.get('metadata', 'No metadata'))
                 self.logger.info("Sample chunk text: %s", sample_chunk.get('text', 'No text')[:200] + '...' if sample_chunk.get('text') else 'No text')
                 self.logger.info("Sample chunk vector shape: %s", len(sample_chunk.get('vector', [])) if sample_chunk.get('vector') is not None else 'No vector')
@@ -228,7 +238,7 @@ class DataPipeline:
             # Verify required fields are present
             required_fields = ['text', 'vector', 'metadata']
             for field in required_fields:
-                if field not in all_chunks.columns:
+                if field not in all_chunks[0].keys():
                     self.logger.error(f"Missing required field: {field}")
                     return False
                     
@@ -253,79 +263,71 @@ class DataPipeline:
             chunks = list(self.chunker.chunk(dl_doc=result.document))
             self.logger.info(f"Created {len(chunks)} chunks")
             
-            # Prepare chunks for LanceDB
-            self.logger.info("Preparing chunks for storage...")
-            processed_chunks = [
-                ProcessedChunk(
-                    text=chunk.text or "empty",
-                    metadata=ChunkMetadata(
-                        filename=chunk.meta.origin.filename or file_path.name,
-                        page_numbers=[item.prov.page_no for item in chunk.meta.doc_items] or [0],  # Fix page number extraction
-                        title=chunk.meta.headings[0] if chunk.meta.headings else "",
-                        doc_type=file_path.suffix[1:] or "unknown",  # Remove leading dot
-                        processed_date=datetime.now().isoformat(),
-                        source_path=str(file_path),
-                        chunk_id=str(i)  # Assign a unique chunk ID
-                    ),
-                    vector=self.embedding_func.generate_embeddings([chunk.text or "empty"])[0]
-                ).model_dump()
-                for i, chunk in enumerate(chunks)
-            ]
-            
-            # Add chunks to LanceDB - it will handle embeddings automatically
+            # Store chunks in LanceDB
             self.logger.info("Storing chunks in LanceDB...")
-            self.table.delete(where="1=1")
-            self.table.flush()  # Ensure delete operation is complete
-            self.table.add(processed_chunks, mode="replace", id_field="metadata.chunk_id")
+            self.logger.info(f"Processing {len(chunks)} chunks")
             
-            # Verify storage
-            if self.verify_lancedb_chunks(len(processed_chunks)):
-                self.logger.info(f"Successfully processed and stored: {file_path.name}")
-            else:
-                raise Exception("Chunk verification failed")
+            # Prepare chunks for LanceDB
+            processed_chunks = []
+            for i, chunk in enumerate(chunks):
+                self.logger.debug(f"Processing chunk {i+1}/{len(chunks)}")
+                try:
+                    metadata = {
+                        "filename": chunk.meta.origin.filename or file_path.name,
+                        "page_numbers": [item.prov.page_no for item in chunk.meta.doc_items] or [0],
+                        "title": chunk.meta.headings[0] if chunk.meta.headings else "",
+                        "doc_type": file_path.suffix[1:] or "unknown",
+                        "processed_date": datetime.now().isoformat(),
+                        "source_path": str(file_path),
+                        "chunk_id": str(i)
+                    }
+                    processed_chunk = DocumentChunk(
+                        text=chunk.text or "empty",
+                        metadata=metadata,
+                        vector=self.embedding_func.generate_embeddings([chunk.text or "empty"])[0]
+                    )
+                    processed_chunks.append(processed_chunk)
+                    self.logger.debug(f"Successfully processed chunk {i+1}")
+                except Exception as e:
+                    self.logger.error(f"Error processing chunk {i+1}: {str(e)}")
+                    raise
+
+            self.process_chunks(processed_chunks)
             
         except Exception as e:
-            self.logger.error(f"Error processing document {file_path.name}: {str(e)}")
+            self.logger.error(f"Error processing document: {str(e)}")
             raise
 
-    def timing_decorator(func):
-        """Decorator to log function execution time."""
-        def wrapper(self, *args, **kwargs):
-            self.logger.info(f"Starting {func.__name__}...")
-            start_time = time.time()
-            result = func(self, *args, **kwargs)
-            end_time = time.time()
-            self.logger.info(f"Processing time for {func.__name__}: {end_time - start_time:.2f} seconds")
-            return result
-        return wrapper
-
-    def _download_and_convert_pdf(self, url):
-        """Download and convert a PDF document."""
-        self.logger.info("Going to convert document batch...")
-        result = self.converter.convert(url)
-        document = result.document
-        
-        # Save outputs to _processed_output directory
-        os.makedirs('_processed_output', exist_ok=True)
-        base_name = os.path.basename(url).replace('.pdf', '')
-        
-        # Export to markdown and JSON
-        markdown_output = document.export_to_markdown()
-        json_output = document.export_to_dict()
-        
-        # Save the outputs
-        markdown_file = os.path.join('_processed_output', f'{base_name}.md')
-        json_file = os.path.join('_processed_output', f'{base_name}.json')
-        
-        with open(markdown_file, 'w', encoding='utf-8') as f:
-            f.write(markdown_output)
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump(json_output, f, indent=4)
+    def process_chunks(self, chunks: List[DocumentChunk]) -> None:
+        """Process and store document chunks in the vector database."""
+        try:
+            # Convert chunks to LanceDB format
+            lance_data = [chunk.to_lance_dict() for chunk in chunks]
             
-        self.logger.info(f"Finished converting document {os.path.basename(url)}")
-        return document
+            # Create or overwrite the chunks table
+            self.db.create_table(
+                name="chunks",
+                data=lance_data,
+                schema=DocumentChunk.get_lance_schema(),
+                mode="overwrite"
+            )
+            
+            # Verify chunk count
+            table = self.db.open_table("chunks")
+            stored_count = len(table)
+            expected_count = len(chunks)
+            
+            if stored_count != expected_count:
+                self.logger.error(f"Chunk count mismatch! Expected {expected_count}, got {stored_count}")
+                raise ValueError("Chunk count mismatch")
+                
+            self.logger.info(f"Successfully stored {stored_count} chunks in the database")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing chunks: {str(e)}")
+            raise
 
-    @timing_decorator
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_pdf(self, url):
         """Process a PDF document through the full pipeline."""
         start_time = time.time()
@@ -352,13 +354,16 @@ class DataPipeline:
         self.logger.info(f"Created {len(chunks)} chunks with types: {chunk_types}")
         self.logger.info(f"Text content breakdown: {chunk_content}")
         
-        # Prepare chunks for storage
-        self.logger.info("Preparing chunks for storage...")
+        # Store chunks in LanceDB
+        self.logger.info("Storing chunks in LanceDB...")
+        self.logger.info(f"Processing {len(chunks)} chunks")
+        
+        # Prepare chunks for LanceDB
         processed_chunks = []
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
-            self.logger.info(f"Processing batch {i//batch_size + 1} of {(len(chunks) + batch_size - 1)//batch_size}")
+            self.logger.info(f"Processing batch {i//batch_size + 1} of {(len(chunks) + batch_size - 1)//batch_size + 1}")
             
             # Process each chunk in the batch
             batch_chunks = []
@@ -371,45 +376,33 @@ class DataPipeline:
                     self.logger.info(f"First doc item prov: {chunk.meta.doc_items[0].prov}")
 
                 # Ensure we have non-null values for all required fields
-                metadata = ChunkMetadata(
-                    filename=chunk.meta.origin.filename or "unknown.pdf",
-                    page_numbers=[prov.page_no for item in chunk.meta.doc_items for prov in item.prov] or [0],
-                    title=chunk.meta.headings[0] if chunk.meta.headings else "Untitled",
-                    doc_type="pdf",  # Since we're in process_pdf
-                    processed_date=datetime.now().isoformat(),
-                    source_path=chunk.meta.origin.uri or url,
-                    chunk_id=str(uuid.uuid4())
-                )
+                metadata = {
+                    "filename": chunk.meta.origin.filename or "unknown.pdf",
+                    "page_numbers": [prov.page_no for item in chunk.meta.doc_items for prov in item.prov] or [0],
+                    "title": chunk.meta.headings[0] if chunk.meta.headings else "Untitled",
+                    "doc_type": "pdf",  # Since we're in process_pdf
+                    "processed_date": datetime.now().isoformat(),
+                    "source_path": chunk.meta.origin.uri or url,
+                    "chunk_id": str(uuid.uuid4())
+                }
                 
                 # Create processed chunk with embeddings
-                processed_chunk = ProcessedChunk(
+                processed_chunk = DocumentChunk(
                     text=chunk.text or "empty",
                     metadata=metadata,
                     vector=self.embedding_func.generate_embeddings([chunk.text or "empty"])[0]
                 )
-                batch_chunks.append(processed_chunk.model_dump())
+                batch_chunks.append(processed_chunk)
             
             processed_chunks.extend(batch_chunks)
         
-        # Store chunks in LanceDB
-        self.logger.info("Storing chunks in LanceDB...")
-        self.logger.info(f"Adding {len(processed_chunks)} chunks to LanceDB...")
-        self.table.add(
-            data=processed_chunks,
-            mode="append"
-        )
-        
-        # Verify storage
-        if self.verify_lancedb_chunks(len(processed_chunks)):
-            self.logger.info(f"Successfully stored {len(processed_chunks)} chunks")
-        else:
-            self.logger.warning("Chunk verification failed")
+        self.process_chunks(processed_chunks)
         
         process_time = time.time() - start_time
         self.logger.info(f"Processing time for process_pdf: {process_time:.2f} seconds")
         self.logger.info(f"Saved markdown to _processed_output\\{os.path.basename(url).replace('.pdf', '')}.md and JSON to _processed_output\\{os.path.basename(url).replace('.pdf', '')}.json")
     
-    @timing_decorator
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_html(self, url):
         result = self.converter.convert(url)
         document = result.document
@@ -424,7 +417,7 @@ class DataPipeline:
 
         return markdown_file
 
-    @timing_decorator
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_sitemap(self, url):
         sitemap_urls = get_sitemap_urls(url)
         conv_results_iter = self.converter.convert_all(sitemap_urls)
@@ -435,6 +428,32 @@ class DataPipeline:
                 document = result.document
                 docs.append(document)
         return docs
+
+    def _download_and_convert_pdf(self, url):
+        """Download and convert a PDF document."""
+        self.logger.info("Going to convert document batch...")
+        result = self.converter.convert(url)
+        document = result.document
+        
+        # Save outputs to _processed_output directory
+        os.makedirs('_processed_output', exist_ok=True)
+        base_name = os.path.basename(url).replace('.pdf', '')
+        
+        # Export to markdown and JSON
+        markdown_output = document.export_to_markdown()
+        json_output = document.export_to_dict()
+        
+        # Save the outputs
+        markdown_file = os.path.join('_processed_output', f'{base_name}.md')
+        json_file = os.path.join('_processed_output', f'{base_name}.json')
+        
+        with open(markdown_file, 'w', encoding='utf-8') as f:
+            f.write(markdown_output)
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(json_output, f, indent=4)
+            
+        self.logger.info(f"Finished converting document {os.path.basename(url)}")
+        return document
 
     def _setup_document_monitoring(self):
         """Set up file system monitoring for new documents."""
