@@ -23,6 +23,55 @@
   2. Merges undersized successive chunks with same headings (optional via merge_peers)
 - Set appropriate max_tokens based on your embedding model's limits (e.g., 8191 for text-embedding-3-large).
 
+## LanceDB Integration and Pydantic Models
+
+### Schema Design
+- LanceDB provides tight integration with Pydantic through `LanceModel` and `Vector` types
+- Nested models should use regular `BaseModel` for sub-structures and `LanceModel` for the root model
+- Vector dimensions must match the embedding model (e.g., 3072 for text-embedding-3-large)
+- Use string format (ISO) for dates to ensure proper serialization to Arrow types
+
+### Data Serialization
+- Use `model_dump()` to convert Pydantic models to dictionaries for LanceDB storage
+- Ensure all fields have non-null values to prevent Arrow serialization errors
+- For empty text, use placeholder strings like "empty" instead of empty strings
+- Batch processing should convert each item to dictionary format before storage
+
+### Embedding Functions
+- OpenAI embeddings in LanceDB use `generate_embeddings()` method, not `embed_query`
+- Input must be a list of strings, even for single items
+- Empty strings can cause API errors, use placeholders instead
+- API key must be provided either through environment or constructor
+
+### Best Practices
+- Initialize database with a valid schema example using real data types
+- Convert all datetime objects to ISO format strings for compatibility
+- Handle empty or null values explicitly with defaults
+- Use proper type hints to catch issues early
+- Consider batching for large document processing
+
+### Common Issues
+1. Arrow Serialization:
+   - Pydantic models must be converted to dictionaries
+   - Nested models need special handling
+   - Date/time fields need string conversion
+
+2. Embedding Generation:
+   - Empty strings cause API errors
+   - Method name differences between libraries
+   - Proper dimension matching required
+
+3. Schema Evolution:
+   - Initial schema must match all future data
+   - Vector dimensions must be consistent
+   - Consider nullable fields carefully
+
+### Monitoring and Validation
+- Add logging for chunk processing stages
+- Verify data types before insertion
+- Monitor chunk counts and processing results
+- Add error handling for API calls and processing steps
+
 ## Error Handling and Best Practices
 - Always verify LanceDB chunks after storage to ensure data integrity.
 - Use structured logging to track the pipeline stages (conversion, chunking, embedding, storage).
