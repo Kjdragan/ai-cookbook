@@ -218,7 +218,7 @@ class DataPipeline:
         """Verify that chunks were properly stored in LanceDB."""
         try:
             # Get all chunks from the table
-            all_chunks = self.db.get_table("chunks").to_list()
+            all_chunks = self.db.open_table("chunks").to_list()
             chunk_count = len(all_chunks)
             self.logger.info(f"Found {chunk_count} chunks in LanceDB table")
             
@@ -272,9 +272,19 @@ class DataPipeline:
             for i, chunk in enumerate(chunks):
                 self.logger.debug(f"Processing chunk {i+1}/{len(chunks)}")
                 try:
+                    # Extract page numbers safely
+                    page_numbers = []
+                    if chunk.meta.doc_items:
+                        for item in chunk.meta.doc_items:
+                            if hasattr(item.prov, 'page_no'):
+                                page_numbers.append(item.prov.page_no)
+                    
+                    if not page_numbers:
+                        page_numbers = [0]  # Default if no page numbers found
+                    
                     metadata = {
                         "filename": chunk.meta.origin.filename or file_path.name,
-                        "page_numbers": [item.prov.page_no for item in chunk.meta.doc_items] or [0],
+                        "page_numbers": page_numbers,
                         "title": chunk.meta.headings[0] if chunk.meta.headings else "",
                         "doc_type": file_path.suffix[1:] or "unknown",
                         "processed_date": datetime.now().isoformat(),
@@ -482,6 +492,18 @@ class DataPipeline:
 if __name__ == "__main__":
     start_time = time.time()
     pipeline = DataPipeline()
-    pipeline.process_pdf("https://arxiv.org/pdf/2408.09869")
-    total_time = time.time() - start_time
-    pipeline.logger.info(f"Total execution time: {total_time:.2f} seconds")
+    
+    # Process all documents in the input directory
+    input_dir = Path(r"C:\Users\kevin\repos\docling-playground\_documents_for_processing_input")
+    for pdf_file in input_dir.glob("*.pdf"):
+        print(f"\nProcessing: {pdf_file.name}")
+        try:
+            pipeline.process_document(pdf_file)
+        except Exception as e:
+            print(f"Error processing {pdf_file.name}: {str(e)}")
+    
+    # Verify chunks were stored
+    pipeline.verify_lancedb_chunks()
+    
+    end_time = time.time()
+    print(f"Total processing time: {end_time - start_time:.2f} seconds")

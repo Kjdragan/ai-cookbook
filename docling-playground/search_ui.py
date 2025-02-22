@@ -51,20 +51,19 @@ def initialize_db():
             }
             table = db.create_table("chunks", data=sample_data)
         
-        # Try to create FTS index without replace=True first
+        # Try to create FTS index, but don't fail if we can't
         try:
-            table.create_fts_index("text")
-            st.success("Created/Updated FTS index on text column")
-        except Exception as e:
-            st.warning(f"Could not create FTS index: {str(e)}")
+            # Try native FTS first (might work better on Windows)
+            table.create_fts_index("text", use_tantivy=False)
+            st.success("Created/Updated FTS index on text column (native)")
+        except Exception as e1:
             try:
-                # If that fails, try with replace=True
-                table.create_fts_index("text", replace=True)
-                st.success("Created/Updated FTS index on text column (with replace)")
+                # If native fails, try tantivy
+                table.create_fts_index("text", use_tantivy=True)
+                st.success("Created/Updated FTS index on text column (tantivy)")
             except Exception as e2:
-                st.error(f"Failed to create FTS index: {str(e2)}")
-                # Continue without FTS - hybrid search will still work but may be less effective
-                pass
+                st.warning("Could not create FTS index. Hybrid search will still work but may be less efficient.")
+                st.info("To fix this, try running the app with administrator privileges.")
         
         return table
     except Exception as e:
@@ -92,11 +91,19 @@ def search_documents(
             # For hybrid search, we need both vector and text
             embedding_func = initialize_embedding_func()
             vector = embedding_func.generate_embeddings([query])[0]
+            
+            # Create a reranker that combines vector and text scores
+            reranker = lancedb.rerankers.LinearCombinationReranker(
+                weight=0.5,  # Equal weight to vector and text scores
+                return_score="all"  # Return both scores for debugging
+            )
+            
             results = (
                 table.search(query_type="hybrid")
                 .vector(vector)
                 .text(query)
                 .limit(k)
+                .rerank(reranker=reranker, normalize="score")
                 .to_pandas()
             )
         elif query_type == "vector":
@@ -119,7 +126,7 @@ def search_documents(
         return results
     except Exception as e:
         st.error(f"Search error: {str(e)}")
-        return []
+        return pd.DataFrame()
 
 def display_results(results: pd.DataFrame):
     """Display search results in a nice format."""
@@ -131,7 +138,7 @@ def display_results(results: pd.DataFrame):
     for _, row in results.iterrows():
         # Get score based on available columns
         score = "N/A"
-        for score_col in ["_distance", "_score", "_relevance"]:
+        for score_col in ["_relevance", "_distance", "_score"]:
             if score_col in row and pd.notna(row[score_col]):
                 score = f"{row[score_col]:.4f}"
                 break
