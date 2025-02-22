@@ -13,7 +13,7 @@ from utils.sitemap import get_sitemap_urls
 from docling.chunking import HybridChunker
 from docling.datamodel.base_models import InputFormat
 from docling.document_converter import PdfFormatOption
-from docling.utils.model_downloader import download_models, download_layout_model, download_tableformer_model, download_picture_classifier_model, download_code_formula_model, download_smolvlm_model, download_easyocr_models
+from docling.utils.model_downloader import download_models
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from utils.tokenizer import OpenAITokenizerWrapper
@@ -180,32 +180,17 @@ class DataPipeline:
             self.logger.info("Using cached models from: %s", artifacts_path)
             return
             
-        self.logger.info("Downloading layout model...")
-        download_layout_model(artifacts_path)
-        
-        self.logger.info("Downloading tableformer model...")
-        download_tableformer_model(artifacts_path)
-        
-        self.logger.info("Downloading picture classifier model...")
-        download_picture_classifier_model(artifacts_path)
-        
-        self.logger.info("Downloading code formula model...")
-        download_code_formula_model(artifacts_path)
-        
-        self.logger.info("Downloading SmolVlm model...")
         try:
-            download_smolvlm_model(artifacts_path)
-        except Exception as e:
-            self.logger.warning(f"SmolVLM model download failed, using cached version if available: {str(e)}")
+            self.logger.info("Downloading models...")
+            download_models()
+            self.logger.info(f"Models downloaded successfully to: {artifacts_path}")
             
-        self.logger.info("Downloading easyocr models...")
-        download_easyocr_models(artifacts_path)
-        
-        self.logger.info(f"Models downloaded successfully to: {artifacts_path}")
-        
-        # Create cache marker after successful download
-        with open(cache_marker, 'w') as f:
-            f.write(str(datetime.now()))
+            # Create cache marker after successful download
+            with open(cache_marker, 'w') as f:
+                f.write(str(datetime.now()))
+        except Exception as e:
+            self.logger.error(f"Error during model download: {str(e)}")
+            raise
 
     def verify_lancedb_chunks(self, expected_count: Optional[int] = None) -> bool:
         """Verify that chunks were properly stored in LanceDB.
