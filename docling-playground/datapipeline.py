@@ -193,38 +193,34 @@ class DataPipeline:
             raise
 
     def verify_lancedb_chunks(self, expected_count: Optional[int] = None) -> bool:
-        """Verify that chunks were properly stored in LanceDB.
-        
-        Args:
-            expected_count: Optional number of chunks expected
-            
-        Returns:
-            bool: True if verification passed
-        """
+        """Verify that chunks were properly stored in LanceDB."""
         try:
-            # Check if table exists and has data
-            count = len(self.table)
-            self.logger.info(f"Found {count} chunks in LanceDB table")
+            # Get all chunks from the table
+            all_chunks = self.table.to_pandas()
+            chunk_count = len(all_chunks)
+            self.logger.info(f"Found {chunk_count} chunks in LanceDB table")
             
-            if expected_count is not None and count != expected_count:
-                self.logger.warning(f"Expected {expected_count} chunks but found {count}")
+            # Print diagnostic information for the first chunk
+            if chunk_count > 0:
+                self.logger.info("Sample chunk data:")
+                sample_chunk = all_chunks.iloc[0]
+                self.logger.info("Available columns: %s", list(all_chunks.columns))
+                self.logger.info("Sample chunk metadata: %s", sample_chunk.get('metadata', 'No metadata'))
+                self.logger.info("Sample chunk text: %s", sample_chunk.get('text', 'No text')[:200] + '...' if sample_chunk.get('text') else 'No text')
+                self.logger.info("Sample chunk vector shape: %s", len(sample_chunk.get('vector', [])) if sample_chunk.get('vector') is not None else 'No vector')
+            
+            if expected_count is not None and chunk_count != expected_count:
+                self.logger.warning(f"Expected {expected_count} chunks but found {chunk_count}")
                 return False
             
-            # Verify a random chunk has all required fields
-            if count > 0:
-                sample = self.table.head(1)
-                chunk = sample[0]
-                required_fields = ["text", "metadata", "vector"]
-                
-                for field in required_fields:
-                    if field not in chunk:
-                        self.logger.error(f"Missing required field: {field}")
-                        return False
-                        
-                self.logger.info("Chunk verification passed")
-                return True
-            
-            return count > 0
+            # Verify required fields are present
+            required_fields = ['text', 'vector', 'metadata']
+            for field in required_fields:
+                if field not in all_chunks.columns:
+                    self.logger.error(f"Missing required field: {field}")
+                    return False
+                    
+            return True
             
         except Exception as e:
             self.logger.error(f"Error verifying chunks: {str(e)}")
@@ -296,27 +292,23 @@ class DataPipeline:
     @timing_decorator
     def process_pdf(self, url):
         """Process a PDF document through the full pipeline."""
-        # Convert document and get initial outputs
-        result = self.converter.convert(url)
-        document = result.document
-        markdown_output = document.export_to_markdown()
-        json_output = document.export_to_dict()
-
-        # Save outputs to _processed_output directory
-        os.makedirs('_processed_output', exist_ok=True)
-        base_name = os.path.basename(url).replace('.pdf', '')
-        markdown_file = os.path.join('_processed_output', f'{base_name}.md')
-        json_file = os.path.join('_processed_output', f'{base_name}.json')
-
-        with open(markdown_file, 'w', encoding='utf-8') as f:
-            f.write(markdown_output)
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump(json_output, f, indent=4)
-
+        start_time = time.time()
+        self.logger.info("Starting process_pdf...")
+        
+        # Download and convert document
+        document = self._download_and_convert_pdf(url)
+        
         # Process document through chunking pipeline
         self.logger.info("Processing document through chunking pipeline...")
         chunks = list(self.chunker.chunk(dl_doc=document))
-        self.logger.info(f"Created {len(chunks)} chunks")
+        
+        # Log chunk types for diagnosis
+        chunk_types = {}
+        for chunk in chunks:
+            chunk_type = type(chunk.meta.doc_items[0]).__name__ if chunk.meta.doc_items else "Unknown"
+            chunk_types[chunk_type] = chunk_types.get(chunk_type, 0) + 1
+        
+        self.logger.info(f"Created {len(chunks)} chunks with types: {chunk_types}")
         
         # Prepare chunks for LanceDB
         self.logger.info("Preparing chunks for storage...")
@@ -330,33 +322,39 @@ class DataPipeline:
             for chunk in batch:
                 # Skip empty chunks
                 if not chunk.text:
+                    self.logger.debug(f"Skipping empty chunk of type: {type(chunk.meta.doc_items[0]).__name__ if chunk.meta.doc_items else 'Unknown'}")
                     continue
                     
                 # Create ProcessedChunk instance with metadata
                 processed_chunk = ProcessedChunk.with_embeddings(self.embedding_func)(
-                    text=chunk.text,  # Now we know it's not empty
+                    text=chunk.text,
                     metadata=ChunkMetadata(
-                        filename=base_name + ".pdf",
+                        filename=os.path.basename(url) + ".pdf",
                         page_numbers=sorted(set(
                             prov.page_no
                             for item in chunk.meta.doc_items
                             for prov in item.prov
-                        )) or [0],  # Default to page 0 if no page numbers
+                        )) or [0],
                         title=chunk.meta.headings[0] if chunk.meta.headings else "",
                         doc_type="pdf",
                         processed_date=datetime.now(),
                         source_path=url,
-                        chunk_id=str(i)  # Assign a unique chunk ID
+                        chunk_id=str(i)
                     ),
-                    vector=np.zeros(self.embedding_func.ndims()).tolist()  # Initialize vector, will be replaced by embedding function
+                    vector=np.zeros(self.embedding_func.ndims()).tolist()
                 )
                 processed_chunks.append(processed_chunk)
         
         # Add chunks to LanceDB - embeddings will be computed automatically
         self.logger.info("Storing chunks in LanceDB...")
+        
+        # First, clear the existing table data
+        self.table.delete(where="1=1")
+        
+        # Then add all chunks
         self.table.add(
-            processed_chunks,
-            mode="overwrite"  # Use overwrite mode to replace existing data
+            data=processed_chunks,
+            mode="append"  # Use append mode after clearing the table
         )
         
         # Verify storage
@@ -365,7 +363,7 @@ class DataPipeline:
         else:
             self.logger.warning("Chunk verification failed")
 
-        return markdown_file, json_file
+        return 
 
     @timing_decorator
     def process_html(self, url):
@@ -407,47 +405,45 @@ class DataPipeline:
 
     def _setup_database(self):
         """Initialize LanceDB database and table."""
-        # Create database directory if it doesn't exist
-        os.makedirs("data/lancedb", exist_ok=True)
-        
-        # Connect to database
-        self.db = lancedb.connect("data/lancedb")
-        
-        # Get OpenAI embedding function from registry
-        self.embedding_func = EmbeddingFunctionRegistry.get_instance().get("openai").create(
-            name="text-embedding-3-small",
-            max_retries=3  # Reduce retries for development
-        )
-        
-        # Create table schema with embedding function
-        table_schema = ProcessedChunk.with_embeddings(self.embedding_func)
-        
-        # Initialize with an empty chunk to establish schema
-        empty_metadata = ChunkMetadata(
-            filename="",
-            page_numbers=[],
-            title="",
-            doc_type="",
-            processed_date=datetime.now(),
-            source_path="",
-            chunk_id="init"
-        )
-        
-        # Create empty chunk with zero vector
-        empty_chunk = table_schema(
-            text="",
-            metadata=empty_metadata,
-            vector=np.zeros(self.embedding_func.ndims()).tolist()  # Initialize with zeros
-        )
-        
-        # Create table with schema (this will create if not exists)
-        self.table = self.db.create_table(
-            "documents",
-            data=[empty_chunk],
-            schema=table_schema,
-            mode="overwrite"  # Force create new table
-        )
-        self.logger.info("Initialized documents table")
+        try:
+            # Create database directory if it doesn't exist
+            os.makedirs("lancedb", exist_ok=True)
+            
+            # Delete existing database if it exists
+            if os.path.exists("lancedb/documents.lance"):
+                self.logger.info("Removing existing database...")
+                import shutil
+                shutil.rmtree("lancedb/documents.lance")
+            
+            # Initialize database
+            self.db = lancedb.connect("lancedb")
+            
+            # Create table with schema
+            empty_chunk = ProcessedChunk.with_embeddings(self.embedding_func)(
+                text="",
+                metadata=ChunkMetadata(
+                    filename="",
+                    page_numbers=[0],
+                    title="",
+                    doc_type="",
+                    processed_date=datetime.now(),
+                    source_path="",
+                    chunk_id="0"
+                ),
+                vector=np.zeros(self.embedding_func.ndims()).tolist()
+            )
+            
+            self.table = self.db.create_table(
+                "documents",
+                data=[empty_chunk],
+                mode="overwrite"
+            )
+            
+            self.logger.info("Initialized documents table")
+            
+        except Exception as e:
+            self.logger.error(f"Error setting up database: {str(e)}")
+            raise
 
     def queue_document(self, file_path: str):
         """Queue a document for processing."""
@@ -465,7 +461,6 @@ class DataPipeline:
 if __name__ == "__main__":
     start_time = time.time()
     pipeline = DataPipeline()
-    markdown_file, json_file = pipeline.process_pdf("https://arxiv.org/pdf/2408.09869")
+    pipeline.process_pdf("https://arxiv.org/pdf/2408.09869")
     total_time = time.time() - start_time
-    pipeline.logger.info(f"Saved markdown to {markdown_file} and JSON to {json_file}")
     pipeline.logger.info(f"Total execution time: {total_time:.2f} seconds")
