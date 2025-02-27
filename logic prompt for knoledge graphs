@@ -1,0 +1,35 @@
+We could ask O3 or R1 to perform the following task:
+
+Read the new PDF files incl Graphs and tables
+Understand the main new thematic topic and methods
+Generate a short technical summary of main implementation
+Identify KG nodes that are similar to new technical summary
+Extract the reasoning traces from KG and compare to tech summary
+Identify overlaps and contradictory triplets to new tech summary
+Calculate probabilities for correct reasoning traces incl new research
+Delete specific reasoning traces in KG and note all dependencies
+Insert new knowledge triplets in my KG
+Validate thematic coherence of new subgraphs in KG
+...
+plus MORE... too complicated...use individula agents
+
+
+Ingestion Agents (IA): Retrieve raw documents (PDF/HTML), normalize text (handling OCR errors, tables), and extract metadata (authors, journal, publication date).
+
+Reader Agents (RA): Split documents into sections, score segment relevance using KG context, and filter non-relevant content (e.g., acknowledgments).
+
+Summarizer Agents (SA): Condense text segments into concise summaries while preserving entity relationships (e.g., "Drug X inhibits Protein Y, reducing Disease Z symptoms" → "X inhibits Y; Y linked to Z").
+
+Entity Extraction Agents (EEA): Identify entities via few-shot LLM prompts, then normalize them to KG canonical forms using ontology-guided embedding alignment.
+
+Relationship Extraction Agents (REA): Detect relationships (e.g., treats, causes) between entity pairs using multi-label classification, allowing overlapping relations (e.g., "Drug A both inhibits Protein B and triggers Side Effect C").
+
+Schema Alignment Agents (SAA): Map novel entities/relations to KG schema types (e.g., classifying "CRISPR-Cas9" as Gene-Editing Tool) or flag them for ontology expansion.
+
+Conflict Resolution Agents (CRA): Resolve contradictions (e.g., new triplet "Drug D treats Disease E" vs. existing "Drug D exacerbates Disease E") via LLM debate and evidence aggregation.
+
+Evaluator Agents (EA): Compute integration confidence using weighted signals (confidence, relevance, clarity) and apply threshold-based final approval.
+
+PLUS: CENTRAL CONTROL AGENT ....   SO 9 TOTAL
+
+Paper has the prompts for each agent. domain-specific  genomics, proteomics, metabolomics
