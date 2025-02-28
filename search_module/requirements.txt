@@ -7,3 +7,6 @@ pydantic>=2.0.0
 fastapi>=0.100.0
 uvicorn>=0.20.0
 tenacity>=8.0.0
+llama-index-core>=0.10.0
+llama-index-vector-stores-lancedb>=0.1.0
+llama-index-llms-openai>=0.1.0
