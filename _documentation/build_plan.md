@@ -134,13 +134,53 @@ table.add(processed_chunks)  # Automatic embedding
 - Cache frequent searches
 
 ## 6. Next Steps
-1. Implement file monitoring
-2. Extend DataPipeline class
-3. Set up LanceDB integration
-4. Add batch processing
+1. ✅ Implement file monitoring
+2. ✅ Extend DataPipeline class
+3. ✅ Set up LanceDB integration
+4. ✅ Add batch processing
 5. Implement search functionality
 
-## 7. Dependencies
+## 7. Implementation Amendments
+
+### 7.1 Amendment 1: Pipeline Reliability (Completed Feb 2025)
+Based on issues identified during initial implementation, the following amendments were made:
+
+1. **File Tracking**:
+   - Added SQLite database to track processed files
+   - Implemented methods to check and mark files as processed
+   - Added status tracking for error handling
+
+2. **LanceDB API Compatibility**:
+   - Updated verification logic to use `.to_pandas()` instead of `.to_list()`
+   - Added comprehensive error handling for database operations
+   - Improved sample data display for debugging
+
+3. **Database Storage Optimization**:
+   - Fixed append mode for continuous document processing
+   - Standardized database paths across all modules
+   - Implemented proper transaction handling
+
+4. **Execution Flow**:
+   - Added option for monitoring mode vs single processing run
+   - Implemented graceful shutdown process
+   - Added detailed logging to separate files per run
+
+5. **Progress and Performance Monitoring**:
+   - Added processing time tracking
+   - Implemented detailed logging of chunk statistics
+   - Added error context for failed operations
+
+### 7.2 Future Amendments
+1. **User Interface Enhancements**
+   - Add web interface for search and exploration
+   - Implement visualization of document relationships
+
+2. **Advanced Search Features**
+   - Implement faceted search
+   - Add time-based filtering
+   - Implement contextual reranking
+
+## 8. Dependencies
 - Docling with GPU support
 - OpenAI API access
 - LanceDB

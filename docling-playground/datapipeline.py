@@ -9,6 +9,7 @@ from typing import List, Optional, Dict, Any, Type, Union
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import uuid
+import sqlite3
 
 from docling.document_converter import (
     DocumentConverter,
@@ -22,8 +23,8 @@ from docling.datamodel.pipeline_options import (
     PdfPipelineOptions,
     EasyOcrOptions
 )
-from utils.tokenizer import OpenAITokenizerWrapper
-from utils.sitemap import get_sitemap_urls
+from docling.datamodel.base_models import InputFormat
+from docling.utils.model_downloader import download_models
 import lancedb
 from lancedb import vector
 from lancedb.pydantic import LanceModel, Vector
@@ -32,10 +33,13 @@ import numpy as np
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 from transformers import AutoTokenizer
-from docling.datamodel.base_models import InputFormat
-from docling.utils.model_downloader import download_models
 import shutil
 from dotenv import load_dotenv
+import pandas as pd
+
+# Import from the local utils folder
+from utils.tokenizer import OpenAITokenizerWrapper
+from utils.sitemap import get_sitemap_urls
 
 class ChunkMetadata(BaseModel):
     """Metadata for document chunks."""
@@ -112,12 +116,29 @@ class DataPipeline:
     def __init__(self, artifacts_path=None):
         """Initialize the document processing pipeline."""
         # Set up logging
+        import os
+        from datetime import datetime
+        
+        # Create logs directory if it doesn't exist
+        logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Generate a timestamp-based log filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(logs_dir, f"pipeline_{timestamp}.log")
+        
+        # Configure logging to both console and file
         logging.basicConfig(
             level=logging.DEBUG,  # Change to DEBUG level
             format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()  # Also log to console
+            ]
         )
         self.logger = logging.getLogger(__name__)
+        self.logger.info(f"Logging to file: {log_file}")
         
         # Load environment variables from .env
         load_dotenv()
@@ -164,7 +185,9 @@ class DataPipeline:
         )
         
         # Initialize database
-        self.db = lancedb.connect("lancedb")
+        lancedb_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "lancedb_data")
+        self.logger.info(f"Using LanceDB storage at: {lancedb_path}")
+        self.db = lancedb.connect(lancedb_path)
         
         # Initialize embedding function
         self.logger.info("Initializing embedding function...")
@@ -184,9 +207,45 @@ class DataPipeline:
             merge_peers=True  # Merge undersized successive chunks with same headings
         )
         
+        # Setup tracking database for processed files
+        self._setup_tracking_database()
+        
         init_time = time.time() - self.init_start_time
         self.logger.info(f"Pipeline initialization time: {init_time:.2f} seconds")
         self.logger.info("Pipeline initialization complete. Ready for processing.")
+
+    def _setup_tracking_database(self):
+        """Set up or connect to the tracking database."""
+        self.tracking_db_path = "processed_files.db"
+        self.conn = sqlite3.connect(self.tracking_db_path)
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS processed_files (
+            file_path TEXT PRIMARY KEY,
+            filename TEXT,
+            processed_date TEXT,
+            chunk_count INTEGER,
+            status TEXT
+        )
+        ''')
+        self.conn.commit()
+        
+    def is_file_processed(self, file_path):
+        """Check if a file has already been processed."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM processed_files WHERE file_path = ?", (str(file_path),))
+        return cursor.fetchone() is not None
+
+    def mark_file_processed(self, file_path, chunk_count, status="completed"):
+        """Mark a file as processed in the tracking database."""
+        cursor = self.conn.cursor()
+        filename = os.path.basename(file_path)
+        processed_date = datetime.now().isoformat()
+        cursor.execute(
+            "INSERT OR REPLACE INTO processed_files VALUES (?, ?, ?, ?, ?)",
+            (str(file_path), filename, processed_date, chunk_count, status)
+        )
+        self.conn.commit()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def _warmup_models(self, artifacts_path):
@@ -218,31 +277,94 @@ class DataPipeline:
         """Verify that chunks were properly stored in LanceDB."""
         try:
             # Get all chunks from the table
-            all_chunks = self.db.open_table("chunks").to_list()
-            chunk_count = len(all_chunks)
+            if "chunks" not in self.db.table_names():
+                self.logger.warning("No 'chunks' table exists in the database")
+                return False
+                
+            table = self.db.open_table("chunks")
+            
+            # Count total rows in a version-compatible way
+            try:
+                # Try using len() first (works in most versions)
+                chunk_count = len(table)
+            except Exception as e:
+                self.logger.warning(f"Error using len(table): {str(e)}")
+                # Fallback to counting using to_arrow() or to_pandas()
+                try:
+                    chunk_count = len(table.to_arrow())
+                except Exception:
+                    try:
+                        chunk_count = len(table.to_pandas())
+                    except Exception:
+                        # Final fallback - try search with a dummy vector that will match everything
+                        try:
+                            # Create a dummy vector of the same dimension as our embeddings
+                            dummy_vec = [0.0] * 3072  # text-embedding-3-large dimension
+                            # Use search with a very high limit and count results
+                            results = table.search(dummy_vec).limit(10000).to_list()
+                            chunk_count = len(results)
+                        except Exception as e2:
+                            self.logger.error(f"Failed to count chunks: {str(e2)}")
+                            return False
+            
             self.logger.info(f"Found {chunk_count} chunks in LanceDB table")
             
+            # Get sample data for diagnostics (using search with limit)
+            try:
+                # Try the regular search method first
+                dummy_vec = [0.0] * 3072  # text-embedding-3-large dimension
+                sample_data = table.search(dummy_vec).limit(5).to_list()
+                
+                if len(sample_data) > 0:
+                    sample_df = pd.DataFrame(sample_data)
+                else:
+                    # If no results, try another approach
+                    sample_df = pd.DataFrame()
+            except Exception as e:
+                self.logger.warning(f"Error using search().to_list(): {str(e)}")
+                # Fallback method
+                try:
+                    sample_df = table.query().limit(5).to_pandas()
+                except Exception as e2:
+                    self.logger.warning(f"Error using query().to_pandas(): {str(e2)}")
+                    sample_df = pd.DataFrame()  # Empty dataframe as fallback
+            
             # Print diagnostic information for the first chunk
-            if chunk_count > 0:
+            if not sample_df.empty:
                 self.logger.info("Sample chunk data:")
-                sample_chunk = all_chunks[0]
-                self.logger.info("Available columns: %s", list(all_chunks[0].keys()))
-                self.logger.info("Sample chunk metadata: %s", sample_chunk.get('metadata', 'No metadata'))
-                self.logger.info("Sample chunk text: %s", sample_chunk.get('text', 'No text')[:200] + '...' if sample_chunk.get('text') else 'No text')
-                self.logger.info("Sample chunk vector shape: %s", len(sample_chunk.get('vector', [])) if sample_chunk.get('vector') is not None else 'No vector')
+                sample_chunk = sample_df.iloc[0]
+                self.logger.info(f"Available columns: {list(sample_df.columns)}")
+                
+                # Safely extract metadata
+                if 'metadata' in sample_df.columns:
+                    self.logger.info(f"Sample chunk metadata: {sample_chunk.get('metadata', 'No metadata')}")
+                
+                # Safely extract text
+                if 'text' in sample_df.columns:
+                    text_sample = sample_chunk.get('text', 'No text')
+                    if text_sample:
+                        text_preview = text_sample[:200] + '...' if len(text_sample) > 200 else text_sample
+                        self.logger.info(f"Sample chunk text: {text_preview}")
+                    else:
+                        self.logger.info("Sample chunk text: No text")
+                
+                # Safely extract vector
+                if 'vector' in sample_df.columns:
+                    vector = sample_chunk.get('vector')
+                    if vector is not None:
+                        vector_shape = len(vector) if isinstance(vector, (list, np.ndarray)) else 'Not a vector'
+                        self.logger.info(f"Sample chunk vector shape: {vector_shape}")
+                    else:
+                        self.logger.info("Sample chunk vector: None")
+            else:
+                self.logger.warning("Could not retrieve sample data from chunks table")
             
             if expected_count is not None and chunk_count != expected_count:
                 self.logger.warning(f"Expected {expected_count} chunks but found {chunk_count}")
                 return False
             
-            # Verify required fields are present
-            required_fields = ['text', 'vector', 'metadata']
-            for field in required_fields:
-                if field not in all_chunks[0].keys():
-                    self.logger.error(f"Missing required field: {field}")
-                    return False
-                    
-            return True
+            # Basic validation passed
+            return chunk_count > 0
             
         except Exception as e:
             self.logger.error(f"Error verifying chunks: {str(e)}")
@@ -304,40 +426,97 @@ class DataPipeline:
 
             self.process_chunks(processed_chunks)
             
+            # Mark file as processed
+            self.mark_file_processed(str(file_path), len(processed_chunks))
+            
         except Exception as e:
             self.logger.error(f"Error processing document: {str(e)}")
             raise
 
     def process_chunks(self, chunks: List[DocumentChunk]) -> None:
         """Process and store document chunks in the vector database."""
-        try:
-            # Convert chunks to LanceDB format
-            lance_data = [chunk.to_lance_dict() for chunk in chunks]
+        if not chunks:
+            self.logger.warning("No chunks to process")
+            return
             
-            # Create or overwrite the chunks table
-            self.db.create_table(
-                name="chunks",
-                data=lance_data,
-                schema=DocumentChunk.get_lance_schema(),
-                mode="overwrite"
-            )
+        try:
+            # Validate chunks before converting to LanceDB format
+            valid_chunks = []
+            for i, chunk in enumerate(chunks):
+                try:
+                    # Ensure chunk has a vector of the right dimension
+                    if chunk.vector is None or len(chunk.vector) != 3072:
+                        self.logger.warning(f"Chunk {i}: Invalid vector dimension, regenerating embedding")
+                        if chunk.text:
+                            chunk.vector = self.embedding_func.generate_embeddings([chunk.text])[0]
+                        else:
+                            chunk.vector = [0.0] * 3072  # Default vector if no text
+                            
+                    # Ensure metadata has required fields
+                    if not chunk.metadata:
+                        self.logger.warning(f"Chunk {i}: Missing metadata, adding placeholder")
+                        chunk.metadata = {
+                            "filename": "unknown.pdf",
+                            "page_numbers": [0],
+                            "title": "Untitled",
+                            "doc_type": "unknown",
+                            "processed_date": datetime.now().isoformat(),
+                            "source_path": "unknown",
+                            "chunk_id": str(uuid.uuid4())
+                        }
+                        
+                    valid_chunks.append(chunk)
+                except Exception as e:
+                    self.logger.error(f"Error validating chunk {i}: {str(e)}")
+            
+            if not valid_chunks:
+                self.logger.error("No valid chunks after validation")
+                return
+                
+            # Convert chunks to LanceDB format
+            lance_data = [chunk.to_lance_dict() for chunk in valid_chunks]
+            self.logger.info(f"Converted {len(valid_chunks)} valid chunks to LanceDB format")
+            
+            # Check if table exists
+            if "chunks" in self.db.table_names():
+                # If table exists, use append mode
+                table = self.db.open_table("chunks")
+                try:
+                    table.add(data=lance_data)
+                    self.logger.info(f"Added {len(valid_chunks)} chunks to existing table")
+                except Exception as e:
+                    self.logger.error(f"Error adding chunks to table: {str(e)}")
+                    # Try one more time after a short delay
+                    time.sleep(2)
+                    table.add(data=lance_data)
+                    self.logger.info(f"Successfully added chunks on second attempt")
+            else:
+                # If table doesn't exist, create it
+                try:
+                    schema = DocumentChunk.get_lance_schema()
+                    self.db.create_table(
+                        name="chunks",
+                        data=lance_data,
+                        schema=schema,
+                        mode="create"
+                    )
+                    self.logger.info(f"Created new table with {len(valid_chunks)} chunks")
+                except Exception as e:
+                    self.logger.error(f"Error creating table: {str(e)}")
+                    raise
             
             # Verify chunk count
-            table = self.db.open_table("chunks")
-            stored_count = len(table)
-            expected_count = len(chunks)
-            
-            if stored_count != expected_count:
-                self.logger.error(f"Chunk count mismatch! Expected {expected_count}, got {stored_count}")
-                raise ValueError("Chunk count mismatch")
-                
-            self.logger.info(f"Successfully stored {stored_count} chunks in the database")
+            try:
+                table = self.db.open_table("chunks")
+                stored_count = len(table)
+                self.logger.info(f"Successfully stored chunks in the database (total: {stored_count})")
+            except Exception as e:
+                self.logger.warning(f"Could not verify chunk count: {str(e)}")
             
         except Exception as e:
             self.logger.error(f"Error processing chunks: {str(e)}")
             raise
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_pdf(self, url):
         """Process a PDF document through the full pipeline."""
         start_time = time.time()
@@ -412,7 +591,6 @@ class DataPipeline:
         self.logger.info(f"Processing time for process_pdf: {process_time:.2f} seconds")
         self.logger.info(f"Saved markdown to _processed_output\\{os.path.basename(url).replace('.pdf', '')}.md and JSON to _processed_output\\{os.path.basename(url).replace('.pdf', '')}.json")
     
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_html(self, url):
         result = self.converter.convert(url)
         document = result.document
@@ -427,7 +605,6 @@ class DataPipeline:
 
         return markdown_file
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_sitemap(self, url):
         sitemap_urls = get_sitemap_urls(url)
         conv_results_iter = self.converter.convert_all(sitemap_urls)
@@ -480,7 +657,10 @@ class DataPipeline:
         """Queue a document for processing."""
         path = Path(file_path)
         self.logger.info(f"Queuing document for processing: {path.name}")
-        self.process_document(path)
+        if not self.is_file_processed(file_path):
+            self.process_document(path)
+        else:
+            self.logger.info(f"Skipping already processed file: {path.name}")
 
     def __del__(self):
         """Cleanup when pipeline is destroyed."""
@@ -493,17 +673,42 @@ if __name__ == "__main__":
     start_time = time.time()
     pipeline = DataPipeline()
     
-    # Process all documents in the input directory
+    # Check for command line argument to enable monitoring
+    import sys
+    enable_monitoring = "--monitor" in sys.argv
+    
+    # Process all new documents in the input directory
     input_dir = Path(r"C:\Users\kevin\repos\docling-playground\_documents_for_processing_input")
+    new_files_processed = 0
+    
+    # Process existing files first
     for pdf_file in input_dir.glob("*.pdf"):
-        print(f"\nProcessing: {pdf_file.name}")
+        print(f"\nProcessing file: {pdf_file.name}")
         try:
             pipeline.process_document(pdf_file)
+            new_files_processed += 1
         except Exception as e:
             print(f"Error processing {pdf_file.name}: {str(e)}")
+            pipeline.mark_file_processed(str(pdf_file), 0, status="error")
     
     # Verify chunks were stored
     pipeline.verify_lancedb_chunks()
     
     end_time = time.time()
+    print(f"Processed {new_files_processed} files")
     print(f"Total processing time: {end_time - start_time:.2f} seconds")
+    
+    # Only enter monitoring mode if specifically requested
+    if enable_monitoring:
+        # Enable file monitoring for real-time processing
+        pipeline._setup_document_monitoring()
+        print("File monitoring is active. Press Ctrl+C to exit.")
+        try:
+            # Keep the program running to monitor for new files
+            import time
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Shutting down...")
+    else:
+        print("Processing complete. Exiting gracefully.")

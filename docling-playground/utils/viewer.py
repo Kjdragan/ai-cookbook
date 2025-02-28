@@ -16,7 +16,11 @@ def json_serializable(item):
 
 def view_database():
     # Connect to the LanceDB database
-    db = lancedb.connect("lancedb")
+    import os
+    
+    # Use the standardized path to lancedb_data
+    lancedb_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "lancedb_data")
+    db = lancedb.connect(lancedb_path)
 
     # Open the chunks table
     table = db.open_table("chunks")

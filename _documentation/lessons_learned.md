@@ -89,3 +89,32 @@
 - Without warmup: ~43 seconds processing time
 - With warmup: ~33 seconds processing time
 - Consider increasing num_threads when using CUDA (e.g., from 8 to 16)
+
+## Import Management
+- When importing custom modules from project directories, various approaches may be needed:
+  - Absolute imports: `from docling_playground.utils.tokenizer import OpenAITokenizerWrapper`
+  - Relative imports: `from utils.tokenizer import OpenAITokenizerWrapper`
+  - The right approach depends on how the module is being executed (direct vs imported)
+  - For scripts that need to run both ways, consider dynamic imports that fall back based on errors
+
+## Pipeline Design and Execution
+- For document processing pipelines, carefully consider execution flow:
+  - Avoid infinite loops unless specifically required for monitoring purposes
+  - Provide command-line options for continuous monitoring vs one-time processing
+  - Always have a graceful exit path, especially for long-running processes
+  - Log detailed information about processing steps and success/failure
+
+## Logging Best Practices
+- Use timestamp-based log file naming for separate runs
+- Configure both file and console logging simultaneously
+- Include log rotation for long-running processes
+- Log key metrics about processing (chunk counts, processing times, etc.)
+- Use structured logging with consistent formatting across all modules
+
+## Database Management
+- Standardize database paths across all modules that access the same data
+- When multiple modules need the same database:
+  - Define the path in a common configuration location
+  - Use absolute paths derived from project root
+  - Document the database location in code comments
+- Avoid creating multiple database instances in different locations
