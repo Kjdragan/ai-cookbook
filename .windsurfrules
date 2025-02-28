@@ -1,0 +1,3 @@
+Install dependancies through 'uv add' and run python scripts with 'uv run' or in my virtual environment at C:\Users\kevin\repos\docling-playground\.venv
+API keys have been installed in .env file.
+
