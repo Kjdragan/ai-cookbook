@@ -8,9 +8,15 @@ from datetime import datetime
 
 # Import our search components
 from .search_client import SearchClient
-from .providers.base import SearchResult
+from .providers.search_provider import SearchResult
 from .providers.lancedb_provider import LanceDBSearchProvider
 
+# Import LlamaIndex provider if available
+try:
+    from .providers.llamaindex import LlamaIndexProvider
+    LLAMAINDEX_AVAILABLE = True
+except ImportError:
+    LLAMAINDEX_AVAILABLE = False
 
 # Configure logging
 log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
@@ -83,7 +89,12 @@ async def startup_event():
         lancedb_provider = LanceDBSearchProvider()
         
         # Initialize the search client with the LanceDB provider
-        search_client = SearchClient(providers=[lancedb_provider])
+        providers = [lancedb_provider]
+        
+        if LLAMAINDEX_AVAILABLE:
+            providers.append(LlamaIndexProvider())
+        
+        search_client = SearchClient(providers=providers)
         
         logger.info("Search API initialized successfully")
     except Exception as e:
