@@ -194,12 +194,56 @@ class DataPipeline:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
-        self.embedding_func = get_registry().get("openai").create(
-            name="text-embedding-3-large",
-            api_key=api_key
-        )
+            
+        # Get the embedding registry
+        registry = get_registry()
         
-        # Initialize tokenizer and chunker
+        # Try multiple initialization approaches
+        try:
+            # First attempt: Try using variable_store
+            if hasattr(registry, 'variable_store'):
+                self.logger.info("Using variable_store for API key")
+                registry.variable_store.set("OPENAI_API_KEY", api_key)
+                self.embedding_func = registry.get("openai").create(
+                    name="text-embedding-3-large"
+                )
+                self.logger.info("Successfully initialized embedding model with variable_store")
+                return
+                
+            # Second attempt: Check if we can use environment variable reference instead of hardcoded value
+            self.logger.info("Trying with environment variable reference")
+            try:
+                self.embedding_func = registry.get("openai").create(
+                    name="text-embedding-3-large",
+                    api_key="$env:OPENAI_API_KEY"  # Use environment variable reference
+                )
+                self.logger.info("Successfully initialized embedding model with env var reference")
+                return
+            except Exception as e:
+                self.logger.warning(f"Environment variable reference approach failed: {str(e)}")
+            
+            # Last resort: Fall back to direct OpenAI client
+            self.logger.info("Falling back to direct OpenAI client")
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            
+            # Test if the client works by making a sample embedding request
+            response = client.embeddings.create(
+                input="Test embedding",
+                model="text-embedding-3-large"
+            )
+            
+            # If we get here, client is working
+            self.embedding_func = client
+            self.is_direct_client = True  # Flag to indicate we're using direct client
+            self.logger.info("Successfully initialized direct OpenAI client")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize embedding model: {str(e)}")
+            raise ValueError(f"Could not initialize embedding function: {str(e)}")
+        
+        # We also need to update other functions to handle direct client if used
+        
         self.tokenizer = OpenAITokenizerWrapper()
         self.chunker = HybridChunker(
             tokenizer=self.tokenizer,
@@ -370,6 +414,23 @@ class DataPipeline:
             self.logger.error(f"Error verifying chunks: {str(e)}")
             return False
 
+    def _generate_embedding(self, text: str) -> List[float]:
+        """Generate an embedding vector for a text string."""
+        try:
+            if hasattr(self, 'is_direct_client') and self.is_direct_client:
+                # Using direct OpenAI client
+                response = self.embedding_func.embeddings.create(
+                    input=text,
+                    model="text-embedding-3-large"
+                )
+                return response.data[0].embedding
+            else:
+                # Using LanceDB registry model
+                return self.embedding_func.generate_embeddings([text])[0]
+        except Exception as e:
+            self.logger.error(f"Error generating embedding: {e}")
+            raise
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def process_document(self, file_path: Path):
         """Process a single document through the pipeline with retry logic."""
@@ -416,7 +477,7 @@ class DataPipeline:
                     processed_chunk = DocumentChunk(
                         text=chunk.text or "empty",
                         metadata=metadata,
-                        vector=self.embedding_func.generate_embeddings([chunk.text or "empty"])[0]
+                        vector=self._generate_embedding(chunk.text or "empty")
                     )
                     processed_chunks.append(processed_chunk)
                     self.logger.debug(f"Successfully processed chunk {i+1}")
@@ -448,7 +509,7 @@ class DataPipeline:
                     if chunk.vector is None or len(chunk.vector) != 3072:
                         self.logger.warning(f"Chunk {i}: Invalid vector dimension, regenerating embedding")
                         if chunk.text:
-                            chunk.vector = self.embedding_func.generate_embeddings([chunk.text])[0]
+                            chunk.vector = self._generate_embedding(chunk.text)
                         else:
                             chunk.vector = [0.0] * 3072  # Default vector if no text
                             
@@ -579,7 +640,7 @@ class DataPipeline:
                 processed_chunk = DocumentChunk(
                     text=chunk.text or "empty",
                     metadata=metadata,
-                    vector=self.embedding_func.generate_embeddings([chunk.text or "empty"])[0]
+                    vector=self._generate_embedding(chunk.text or "empty")
                 )
                 batch_chunks.append(processed_chunk)
             

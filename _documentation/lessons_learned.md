@@ -78,6 +78,94 @@
 - Handle nullable fields appropriately in metadata to prevent schema validation errors.
 - Consider using batch processing for embeddings to improve performance.
 
+## LanceDB API Compatibility Issues
+
+- LanceDB has different API versions that require special handling for cross-version compatibility.
+- Common API differences include:
+  - **Search parameters**: Newer versions support `nprobes` and `refine_factor` parameters, while older versions may not.
+  - **Method chaining**: Newer versions use `table.search().limit(n).to_pandas()` pattern, while older versions require `table.search().to_pandas().head(n)`.
+  - **Table methods**: The `stats()` method exists in newer versions but not in older ones.
+  - **Return values**: Distance scores may be handled differently between versions.
+  - **Embedding registry**: Version 0.20.0+ uses a variable store mechanism for API keys, while 0.19.0 passes keys directly.
+  - **Embedding methods**: Different versions may have `generate_embeddings()`, `embed_query()`, or other method variations.
+
+- Best practices for handling API differences:
+  1. Use try/except blocks to catch `AttributeError` and other exceptions related to missing methods.
+  2. Implement fallback mechanisms for different API versions.
+  3. Avoid hardcoding parameters that might not be supported across versions.
+  4. Test with sample queries before implementing complex search logic.
+  5. When possible, abstract API differences behind a consistent interface.
+  6. Implement cascading fallbacks from newest to oldest API patterns.
+  7. As a last resort, provide manual implementations for core functionality.
+
+- 0.19.0 to 0.20.0 Major API Changes:
+  1. Embedding Registry:
+     ```python
+     # 0.20.0+ with variable store
+     registry = get_registry()
+     registry.variable_store.set("OPENAI_API_KEY", api_key)
+     embedding_model = registry.get("openai").create(name=model_name)
+     
+     # 0.19.0 direct API key
+     embedding_model = get_registry().get("openai").create(
+         name=model_name,
+         api_key=api_key
+     )
+     ```
+     
+     Note: In 0.20.0, passing API keys directly will trigger a warning: "Sensitive key 'api_key' cannot be set to a hardcoded value"
+  
+  2. Multiple API Patterns:
+     Implement multiple fallback patterns for version-agnostic code:
+     ```python
+     # Try multiple API patterns in sequence
+     api_methods = [
+         # Newest API with parameters
+         lambda: table.search(vector, **params).limit(limit).to_pandas(),
+         # Newest API without parameters
+         lambda: table.search(vector).limit(limit).to_pandas(),
+         # Older API with parameters
+         lambda: table.search(vector, **params).to_pandas().head(limit),
+         # Older API without parameters
+         lambda: table.search(vector).to_pandas().head(limit),
+     ]
+     
+     # Try each method until one works
+     for method in api_methods:
+         try:
+             results = method()
+             break
+         except Exception:
+             continue
+     ```
+
+   3. Checking LanceDB Version:
+      ```python
+      import lancedb
+      
+      # Get the LanceDB version
+      version = lancedb.__version__
+      
+      # Check if version is compatible
+      if version is None:
+          print("Unable to determine LanceDB version")
+      elif version.startswith("0.20"):
+          print("Using LanceDB 0.20.x")
+      elif version.startswith("0.19"):
+          print("Using LanceDB 0.19.x")
+      else:
+          print(f"Using unsupported LanceDB version: {version}")
+      ```
+
+## Handling NumPy Arrays in LanceDB Metadata
+
+- LanceDB metadata fields may contain NumPy arrays that are not JSON serializable.
+- When working with LanceDB data that needs to be serialized:
+  - Convert NumPy numeric types to Python primitives (`int()`, `float()`, `bool()`)
+  - Convert NumPy arrays to Python lists using `array.tolist()`
+  - Implement recursive conversion functions for nested structures
+  - Handle special NumPy types like `np.int64`, `np.float32`, etc.
+
 ## GPU Acceleration and OCR
 - Docling uses a global AcceleratorOptions configuration that affects all components
 - Can be configured with: device=AcceleratorDevice.CUDA and num_threads parameter
