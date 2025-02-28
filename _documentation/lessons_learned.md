@@ -157,6 +157,29 @@
           print(f"Using unsupported LanceDB version: {version}")
       ```
 
+## LanceDB 0.20.0 Compatibility
+
+- The `variable_store` feature for API key management may not be available in all 0.20.0 builds
+- Direct API key passing is restricted for security reasons
+- Best practice is to implement multiple fallback mechanisms:
+  1. Try using `variable_store` if available
+  2. Attempt environment variable references for API keys
+  3. Fall back to direct client initialization when needed
+
+## Search Results Handling
+
+- Always validate search result fields before accessing them
+- Implement standardized metadata handling across providers
+- Provide graceful degradation when fields are missing
+- Use consistent scoring metrics (lower is better for distance metrics)
+
+## Error Recovery Patterns
+
+- Implement retry logic for API-related operations
+- Log critical state information before and after operations
+- Use try/except blocks to handle version-specific API differences
+- Provide clear error messages that guide users toward solutions
+
 ## Handling NumPy Arrays in LanceDB Metadata
 
 - LanceDB metadata fields may contain NumPy arrays that are not JSON serializable.
