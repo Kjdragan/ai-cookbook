@@ -484,3 +484,34 @@ When migrating to LlamaIndex 0.12+, thorough testing is essential:
   ```
 - Supports both completion and chat interfaces
 - Can be used as a drop-in replacement for other LLM providers
+
+## LlamaIndex 0.12+ Migration Lessons
+
+### Migration Completion Status
+
+We have successfully completed the LlamaIndex 0.12+ migration for all search module components. Here are the key challenges addressed and solutions implemented:
+
+1. **CitationResponseSynthesizer Component**:
+   - Successfully implemented all required abstract methods from BaseSynthesizer 
+   - Added implementations for `_get_prompts`, `_update_prompts`, `aget_response`, `get_response`, and `synthesize`
+   - Changed parameter name from `base_synthesizer` to `response_synthesizer` to maintain compatibility
+
+2. **QueryRouter Improvements**:
+   - Added proper implementation of `route_query` method following new API expectations
+   - Removed dependency on QueryBundle's metadata attribute (no longer exists in 0.12+)
+   - Implemented direct query type detection rather than metadata-based detection
+
+3. **Parameter Ordering Fixes**:
+   - Updated parameter order in `diversity_reranker.rerank()` to match new API expectations
+   - Fixed formatter.format_response call parameter names to ensure compatibility
+
+4. **Response Synthetizer Integration**:
+   - Successfully integrated the CitationResponseSynthesizer with the new modular architecture
+   - Updated prompts and response handling to maintain compatibility
+
+5. **Advanced Example Verification**:
+   - Tested all components in an end-to-end example with the query "What are the main causes of climate change?"
+   - Verified all pipeline stages: query routing, retrieval, reranking, response synthesis, and formatting
+   - Confirmed proper integration of all modules with correct API usage
+
+The entire search pipeline now works correctly with LlamaIndex 0.12+, and the example code runs successfully without any compatibility issues.
