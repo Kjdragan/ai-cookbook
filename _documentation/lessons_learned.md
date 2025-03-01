@@ -229,3 +229,79 @@
   - Use absolute paths derived from project root
   - Document the database location in code comments
 - Avoid creating multiple database instances in different locations
+
+## Search Module Implementation Lessons
+
+### Import Path Management (February 2025)
+- When organizing code with modules and packages, pay careful attention to import paths
+- Always check that import references match the actual file locations and class names
+- Common errors include:
+  - Using incorrect relative import paths (e.g., `.providers.search_provider` vs `.providers.base`)
+  - Importing from non-existent modules
+  - Class names not matching between import statements and implementation files
+- Python's import system can be confusing when mixing direct script execution and package imports
+- Best practice is to use absolute imports when possible and ensure consistent naming conventions
+
+### NumPy Data Serialization (February 2025)
+- NumPy arrays and types are not JSON serializable by default
+- When working with search results containing NumPy data:
+  1. Recursively convert all NumPy types to Python primitives before serialization
+  2. Handle nested dictionaries and lists that might contain NumPy objects
+  3. Create a dedicated helper function for this conversion
+  4. Add proper error handling and fallbacks for serialization failures
+- Example implementation of a NumPy to Python converter:
+  ```python
+  def numpy_to_python(obj):
+      """Recursively convert numpy types to native Python types."""
+      if isinstance(obj, np.ndarray):
+          return obj.tolist()
+      elif np.issubdtype(type(obj), np.integer):
+          return int(obj)
+      elif np.issubdtype(type(obj), np.floating):
+          return float(obj)
+      elif np.issubdtype(type(obj), np.bool_):
+          return bool(obj)
+      elif isinstance(obj, dict):
+          return {k: numpy_to_python(v) for k, v in obj.items()}
+      elif isinstance(obj, list) or isinstance(obj, tuple):
+          return [numpy_to_python(item) for item in obj]
+      else:
+          return obj
+  ```
+- In NumPy 2.0, many type aliases were removed (e.g., `np.float_` is now `np.float64`)
+- Use `np.issubdtype()` for more future-proof type checking rather than direct instance checks
+
+### OpenAI Client Compatibility (February 2025)
+- Different versions of OpenAI's client and integration patterns require conditional handling
+- The direct OpenAI client uses:
+  ```python
+  response = client.embeddings.create(
+      input=query,
+      model=model_name
+  )
+  query_embedding = response.data[0].embedding
+  ```
+- While the LanceDB registry embedding model uses:
+  ```python
+  query_embedding = embedding_model.generate_embeddings([query])[0]
+  ```
+- Mixing these patterns results in the error: 'OpenAI' object has no attribute 'generate_embeddings'
+- Solution: Use conditional code paths based on client type
+  ```python
+  if hasattr(self, 'is_direct_client') and self.is_direct_client:
+      # Direct OpenAI client approach
+      response = self.embedding_model.embeddings.create(...)
+  else:
+      # LanceDB registry model approach
+      query_embedding = self.embedding_model.generate_embeddings([query])[0]
+  ```
+
+### Character Encoding Issues (February 2025)
+- Windows console has limitations with Unicode character display
+- Using special characters like checkmarks (✓) can cause errors: 'charmap' codec can't encode character
+- Best practice is to use ASCII alternatives like [OK] or [CHECK] in console output
+- For cross-platform compatibility, consider:
+  1. Using only ASCII characters in console output
+  2. Implementing platform detection for conditional character sets
+  3. Adding try/except blocks around print statements with potential encoding issues
+  4. Testing output on multiple platforms and console environments

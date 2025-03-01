@@ -11,16 +11,16 @@ import lancedb
 from dotenv import load_dotenv
 
 # Import LlamaIndex components
-from llama_index_vector_stores_lancedb import LanceDBVectorStore
-from llama_index_core.embeddings import OpenAIEmbedding
-from llama_index_core.schema import TextNode, Document, NodeWithScore
-from llama_index_core.indices.vector_store import VectorStoreIndex
-from llama_index_core.retrievers import VectorIndexRetriever
-from llama_index_core.response_synthesizers import CompactAndRefine
-from llama_index_core.query_engine import RetrieverQueryEngine
+from llama_index.vector_stores.lancedb import LanceDBVectorStore
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.core.schema import TextNode, Document, NodeWithScore
+from llama_index.core.indices.vector_store import VectorStoreIndex
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.core.response_synthesizers import CompactAndRefine
+from llama_index.core.query_engine import RetrieverQueryEngine
 
 # Import search provider base classes
-from ..search_provider import SearchProvider, SearchResult
+from ...providers.base import SearchProvider, SearchResult
 from .llm_config import LLMFactory
 from .query_transformation import QueryTransformer
 

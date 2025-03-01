@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 
 # Import providers
-from .providers.search_provider import SearchProvider, SearchResult
+from .providers.base import SearchProvider, SearchResult
 from .providers.lancedb_provider import LanceDBSearchProvider
 
 # Import utilities

@@ -6,9 +6,9 @@ Implements techniques like query rewriting, expansion and HyDE.
 import logging
 from typing import Optional, List, Dict, Any
 
-from llama_index_core.llms import LLM
-from llama_index_core.schema import QueryBundle
-from llama_index_core.query_pipeline import CustomQueryComponent
+from llama_index.core.llms import LLM
+from llama_index.core.schema import QueryBundle
+from llama_index.core.query_pipeline import CustomQueryComponent
 
 logger = logging.getLogger(__name__)
 

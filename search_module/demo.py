@@ -16,7 +16,36 @@ from search_module.providers.lancedb_provider import LanceDBSearchProvider
 def format_result(result, index):
     """Format a search result for display."""
     # Format metadata for display
-    metadata_str = json.dumps(result.metadata, indent=2)
+    import numpy as np
+    import json
+    
+    def numpy_to_python(obj):
+        """Recursively convert numpy types to native Python types."""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, dict):
+            return {k: numpy_to_python(v) for k, v in obj.items()}
+        elif isinstance(obj, list) or isinstance(obj, tuple):
+            return [numpy_to_python(item) for item in obj]
+        else:
+            return obj
+    
+    # Process metadata to convert all numpy types
+    processed_metadata = numpy_to_python(result.metadata)
+    
+    try:
+        metadata_str = json.dumps(processed_metadata, indent=2)
+    except TypeError as e:
+        # Fallback to a simplified version if JSON serialization fails
+        print(f"Warning: Could not serialize metadata: {e}")
+        simplified_metadata = {k: str(v) for k, v in processed_metadata.items()}
+        metadata_str = json.dumps(simplified_metadata, indent=2)
     
     # Truncate text if too long
     text = result.text
@@ -48,12 +77,12 @@ def run_search_demo():
     try:
         print("\nInitializing LanceDB search provider...")
         lancedb_provider = LanceDBSearchProvider()
-        print(f"✓ LanceDB provider initialized successfully")
+        print(f"[OK] LanceDB provider initialized successfully")
         
         # Initialize the search client
         print("\nInitializing search client...")
         search_client = SearchClient(providers=[lancedb_provider])
-        print(f"✓ Search client initialized with providers: {search_client.get_available_providers()}")
+        print(f"[OK] Search client initialized with providers: {search_client.get_available_providers()}")
         
         # Wait for user input
         input("\nPress Enter to continue with basic vector search...")

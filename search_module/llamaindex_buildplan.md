@@ -130,6 +130,34 @@ Extend our existing FastAPI endpoints to support new LlamaIndex capabilities:
 - Collect user feedback on search relevance
 - Monitor LLM token usage for cost management
 
+## Implementation Challenges and Solutions
+
+### Recent Fixes (February 2025)
+
+#### Import Path Correction
+- Fixed import in search_client.py from `.providers.search_provider` to `.providers.base`
+- Ensured proper class inheritance from the abstract base classes
+- Standardized import paths across the codebase to prevent module not found errors
+
+#### NumPy Serialization in Search Results
+- Implemented recursive conversion of NumPy types to Python primitives
+- Created `numpy_to_python` helper function to handle nested objects
+- Fixed "Object of type ndarray is not JSON serializable" error in result formatting
+- Added fallback serialization for non-serializable objects
+- Updated to use NumPy 2.0 compatible type checking with `np.issubdtype()`
+
+#### OpenAI Client Handling
+- Implemented proper handling for both direct OpenAI client and LanceDB registry model
+- Added conditional code paths for each approach in hybrid_search and similar_documents methods
+- Used `embeddings.create()` API for direct client and `generate_embeddings()` for registry model
+- Fixed 'OpenAI' object has no attribute 'generate_embeddings' error in hybrid search
+
+#### Character Encoding
+- Replaced Unicode checkmarks with ASCII representations [OK]
+- Ensured compatibility with Windows console encoding limitations
+
+These fixes ensure that all search methods (basic vector search, hybrid search, and document similarity) work correctly with the configured LanceDB backend and help prepare for the LlamaIndex integration.
+
 ## Future Extensions
 1. Implement optional reranking for precision improvement
 2. Add knowledge graph integration for concept-based search

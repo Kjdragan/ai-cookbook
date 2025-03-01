@@ -258,8 +258,17 @@ class LanceDBSearchProvider(SearchProvider):
         )
         
         try:
-            # Generate embedding for the query using the same approach as search method
-            query_embedding = self.embedding_model.generate_embeddings([query])[0]
+            # Generate embedding for the query using the appropriate method
+            if hasattr(self, 'is_direct_client') and self.is_direct_client:
+                # Using direct OpenAI client
+                response = self.embedding_model.embeddings.create(
+                    input=query,
+                    model=self.embedding_model_name
+                )
+                query_embedding = response.data[0].embedding
+            else:
+                # Using LanceDB registry model
+                query_embedding = self.embedding_model.generate_embeddings([query])[0]
             
             # Start with a search query
             search_query = self.table.search(query_embedding)

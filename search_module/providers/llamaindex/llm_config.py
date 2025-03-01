@@ -15,8 +15,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Import Llama Index components
-from llama_index_core.llms import LLM
-from llama_index_llms_openai import OpenAI
+from llama_index.core.llms import LLM
+from llama_index.llms.openai import OpenAI
 
 class LLMFactory:
     """Factory class for creating LLM instances with different providers."""
