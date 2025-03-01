@@ -11,6 +11,33 @@ from watchdog.events import FileSystemEventHandler
 import uuid
 import sqlite3
 
+"""
+Docling Document Processing Pipeline with CUDA Acceleration
+----------------------------------------------------------
+This module implements a document processing pipeline for PDF documents using Docling,
+with CUDA-accelerated GPU processing. The pipeline converts documents, extracts text,
+tables, and images, then processes them into searchable chunks stored in LanceDB.
+
+Key components:
+1. CUDA Acceleration:
+   - Uses NVIDIA GPU via PyTorch CUDA integration (PyTorch 2.6.0+cu124)
+   - Configures AcceleratorOptions with device=AcceleratorDevice.CUDA
+   - Accelerates EasyOCR for text extraction and image processing
+   - Optimizes document conversion and OCR tasks
+
+2. Processing Flow:
+   - PDF document ingestion
+   - GPU-accelerated OCR and text extraction
+   - Document chunking with HybridChunker
+   - Vector embedding generation via OpenAI's text-embedding-3-large
+   - Storage in LanceDB for semantic search
+
+3. Configuration:
+   - Set up in pyproject.toml with [tool.uv.sources] for PyTorch CUDA
+   - Uses explicit CUDA device selection in accelerator_options
+   - Falls back to CPU processing if CUDA is unavailable
+"""
+
 from docling.document_converter import (
     DocumentConverter,
     PdfFormatOption,
@@ -114,7 +141,15 @@ class DocumentHandler(FileSystemEventHandler):
 
 class DataPipeline:
     def __init__(self, artifacts_path=None):
-        """Initialize the document processing pipeline."""
+        """Initialize the document processing pipeline with CUDA GPU acceleration.
+        
+        The pipeline is configured to use NVIDIA CUDA for GPU-accelerated document processing,
+        which significantly improves performance for OCR, image analysis, and document conversion.
+        
+        Args:
+            artifacts_path (str, optional): Path to cached models. Defaults to None,
+                which uses ~/.cache/docling/models.
+        """
         # Set up logging
         import os
         from datetime import datetime
@@ -153,20 +188,47 @@ class DataPipeline:
         self.logger.info("Checking and downloading required models...")
         self._warmup_models(artifacts_path)
         
-        self.logger.info("Setting up CUDA acceleration...")
-        # Set up CUDA acceleration
-        self.accelerator_options = AcceleratorOptions(
-            num_threads=8, 
-            device=AcceleratorDevice.CUDA  # Explicitly use CUDA
-        )
+        # Check if CUDA is available through PyTorch
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                cuda_device = torch.cuda.get_device_name(0)
+                cuda_version = torch.version.cuda
+                self.logger.info(f"CUDA is available: {cuda_available}")
+                self.logger.info(f"CUDA version: {cuda_version}")
+                self.logger.info(f"GPU device: {cuda_device}")
+                
+                self.logger.info("Setting up CUDA acceleration...")
+                # Set up CUDA acceleration
+                # This configures the pipeline to use NVIDIA GPU via CUDA for faster processing
+                # The AcceleratorDevice.CUDA option enables GPU acceleration for document conversion,
+                # OCR (optical character recognition), and image processing tasks
+                self.accelerator_options = AcceleratorOptions(
+                    num_threads=8, 
+                    device=AcceleratorDevice.CUDA  # Use CUDA acceleration
+                )
+            else:
+                self.logger.warning("CUDA is not available, falling back to CPU processing")
+                self.accelerator_options = AcceleratorOptions(
+                    num_threads=8, 
+                    device=AcceleratorDevice.CPU  # Fall back to CPU
+                )
+        except ImportError:
+            self.logger.warning("PyTorch not found or CUDA support not available, using CPU")
+            self.accelerator_options = AcceleratorOptions(
+                num_threads=8, 
+                device=AcceleratorDevice.CPU  # Use CPU as fallback
+            )
 
-        # Configure pipeline options with CUDA acceleration
+        # Configure pipeline options with appropriate acceleration
         self.logger.info("Configuring pipeline options...")
         self.pipeline_options = PdfPipelineOptions(artifacts_path=artifacts_path)
         self.pipeline_options.accelerator_options = self.accelerator_options
         
-        # Configure OCR options to use EasyOCR with acceleration
-        self.logger.info("Configuring EasyOCR with acceleration...")
+        # Configure OCR options with appropriate acceleration
+        device_type = "CUDA" if getattr(self.accelerator_options, "device", None) == AcceleratorDevice.CUDA else "CPU"
+        self.logger.info(f"Configuring EasyOCR with {device_type} acceleration...")
         self.pipeline_options.do_ocr = True
         self.pipeline_options.ocr_options = EasyOcrOptions()
         
@@ -174,8 +236,8 @@ class DataPipeline:
         self.pipeline_options.do_table_structure = True
         self.pipeline_options.table_structure_options.do_cell_matching = True
 
-        # Create converter with CUDA-enabled options
-        self.logger.info("Creating document converter...")
+        # Create converter with appropriate acceleration options
+        self.logger.info(f"Creating document converter with {device_type} acceleration...")
         self.converter = DocumentConverter(
             format_options={
                 InputFormat.PDF: PdfFormatOption(
@@ -633,7 +695,7 @@ class DataPipeline:
                     "doc_type": "pdf",  # Since we're in process_pdf
                     "processed_date": datetime.now().isoformat(),
                     "source_path": chunk.meta.origin.uri or url,
-                    "chunk_id": str(uuid.uuid4())
+                    "chunk_id": str(i)
                 }
                 
                 # Create processed chunk with embeddings
