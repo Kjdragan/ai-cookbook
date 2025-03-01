@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 from llama_index.core.llms import LLM
 from llama_index.llms.openai import OpenAI
 
+# Try to import DeepSeek LLM if available
+try:
+    from llama_index.llms.deepseek import DeepSeek
+    _HAS_DEEPSEEK = True
+except ImportError:
+    _HAS_DEEPSEEK = False
+    logger.warning("DeepSeek LLM integration not available. Using OpenAI with custom endpoint instead.")
+
 class LLMFactory:
     """Factory class for creating LLM instances with different providers."""
     
@@ -59,20 +67,33 @@ class LLMFactory:
             )
             
         elif provider == "deepseek":
-            api_key = os.getenv("DEEPSEEK_API_KEY")
-            if not api_key:
-                logger.warning("DEEPSEEK_API_KEY not found in environment variables")
-                
-            # Use OpenAI client with custom base URL for Deepseek
-            return OpenAI(
-                model=model_name,
-                api_key=api_key,
-                api_base="https://api.deepseek.com",
-                api_type="openai",
-                temperature=temperature,
-                max_tokens=max_tokens,
-                additional_kwargs=additional_kwargs
-            )
+            if _HAS_DEEPSEEK:
+                api_key = os.getenv("DEEPSEEK_API_KEY")
+                if not api_key:
+                    logger.warning("DEEPSEEK_API_KEY not found in environment variables")
+                    
+                return DeepSeek(
+                    model=model_name,
+                    api_key=api_key,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    additional_kwargs=additional_kwargs
+                )
+            else:
+                api_key = os.getenv("DEEPSEEK_API_KEY")
+                if not api_key:
+                    logger.warning("DEEPSEEK_API_KEY not found in environment variables")
+                    
+                # Use OpenAI client with custom base URL for Deepseek
+                return OpenAI(
+                    model=model_name,
+                    api_key=api_key,
+                    api_base="https://api.deepseek.com",
+                    api_type="openai",
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    additional_kwargs=additional_kwargs
+                )
             
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")

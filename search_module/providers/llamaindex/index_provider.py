@@ -13,8 +13,9 @@ from dotenv import load_dotenv
 # Import LlamaIndex components
 from llama_index.vector_stores.lancedb import LanceDBVectorStore
 from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
 from llama_index.core.schema import TextNode, Document, NodeWithScore
-from llama_index.core.indices.vector_store import VectorStoreIndex
+from llama_index.core import VectorStoreIndex, ServiceContext
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.response_synthesizers import CompactAndRefine
 from llama_index.core.query_engine import RetrieverQueryEngine
@@ -99,11 +100,15 @@ class LlamaIndexProvider(SearchProvider):
         """Initialize LlamaIndex components."""
         try:
             # Create LLM instance
-            self.llm = LLMFactory.create_llm(
-                provider=llm_provider,
-                model_name=llm_model,
-                temperature=0.0
-            )
+            if llm_provider.lower() == "openai":
+                self.llm = OpenAI(model=llm_model, temperature=0.0)
+            else:
+                # Fall back to the factory method for other providers
+                self.llm = LLMFactory.create_llm(
+                    provider=llm_provider,
+                    model_name=llm_model,
+                    temperature=0.0
+                )
             
             # Create query transformer
             self.query_transformer = QueryTransformer(self.llm)
@@ -112,6 +117,12 @@ class LlamaIndexProvider(SearchProvider):
             self.embed_model = OpenAIEmbedding(
                 model_name="text-embedding-3-large",
                 dimensions=self.embedding_dim
+            )
+            
+            # Create service context
+            self.service_context = ServiceContext.from_defaults(
+                llm=self.llm,
+                embed_model=self.embed_model
             )
             
             # Create vector store and index if table exists
@@ -124,7 +135,7 @@ class LlamaIndexProvider(SearchProvider):
                 
                 self.index = VectorStoreIndex.from_vector_store(
                     vector_store=self.vector_store,
-                    embed_model=self.embed_model
+                    service_context=self.service_context
                 )
                 
                 self.logger.info("LlamaIndex components initialized successfully")

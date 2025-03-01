@@ -154,6 +154,16 @@ class SearchProviderFactory:
      - `llama-index-core`
      - `llama-index-vector-stores-lancedb`
      - `llama-index-llms-openai`
+     - `llama-index-embeddings-openai`
+     - `llama-index-llms-deepseek` (optional)
+   - Enhanced `EnsembleRetriever` to support:
+     - Dictionary and list inputs for retrievers
+     - Flexible weight configuration and normalization
+     - Improved error handling and logging
+   - Fixed import paths for core components:
+     - Updated `citation_tracker.py` to use correct postprocessor imports
+     - Updated `query_router.py` to use correct LLM imports
+     - Updated `contextual_formatter.py` to use correct response imports
 
 4. **Search Client:**
    - Implemented provider switching
@@ -168,12 +178,10 @@ class SearchProviderFactory:
 ## Lessons Learned
 
 1. **LlamaIndex API Changes:**
-   - Package structure changed from monolithic `llama_index` to modular packages:
-     - Core functionality moved to `llama_index_core`
-     - Vector stores split into separate packages like `llama_index_vector_stores_lancedb`
-     - LLM integrations moved to packages like `llama_index_llms_openai`
-   - Import paths needed to be updated across the codebase
-   - LanceDB vector store now has its own dedicated package
+   - Package structure changed from monolithic `llama_index` to modular packages
+   - Core functionality moved to `llama_index.core.*`
+   - Component-specific modules moved to separate packages
+   - See `_documentation/lessons_learned.md` for detailed migration notes
 
 2. **API Integration:**
    - Implementing a provider-based architecture provided flexibility
@@ -244,3 +252,33 @@ llama-index-llms-openai>=0.1.0
 - `llm_model`: Model name (gpt-4o, gpt-3.5-turbo, deepseek-chat, etc.)
 - `hybrid_alpha`: Weight between vector and keyword search (0-1)
 - `use_query_transform`: Whether to use query transformation techniques
+
+## Project Documentation Structure
+
+To maintain clarity and prevent losing track of progress as we develop the search module, our documentation is structured as follows:
+
+### 1. Implementation Documentation (`_documentation/`)
+
+- **search_build.md**: This primary document that outlines the overall search architecture, components, and implementation status for all search providers
+- **llamaindex_integration.md**: Detailed plan and status tracking specifically for the LlamaIndex integration
+- **lessons_learned.md**: Technical challenges, solutions, and best practices discovered during implementation
+
+### 2. Provider-Specific Documentation
+
+- **providers/[provider_name]/README.md**: Implementation details, usage examples, and API documentation for each provider
+- Each provider directory should maintain its own detailed documentation to minimize cross-document dependencies
+
+### 3. Tests and Examples
+
+- **_tests/search_module/**: Tests for verifying search functionality (moved from module directory)
+- **examples/search_module/**: Usage examples and demonstrations (like demo.py) to show how to use different search features
+
+### Documentation Maintenance Rules
+
+1. **General Updates**: When making changes that affect multiple providers, update `search_build.md`
+2. **Provider-Specific Updates**: When changing a specific provider, update its README.md file
+3. **New Challenges**: Document any technical challenges and solutions in `lessons_learned.md`
+4. **Status Tracking**: Keep status checklists updated when completing implementation tasks
+5. **Code Examples**: Ensure examples are kept in sync with API changes
+
+This structure ensures documentation remains organized as the project grows, with clear responsibilities for each document type.

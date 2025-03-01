@@ -305,3 +305,182 @@
   2. Implementing platform detection for conditional character sets
   3. Adding try/except blocks around print statements with potential encoding issues
   4. Testing output on multiple platforms and console environments
+
+## LlamaIndex Modular Structure (Version 0.12+)
+
+### Package Organization
+- LlamaIndex 0.12+ uses a modular package structure with separate packages for different functionalities:
+  1. `llama-index-core`: Core functionality and base classes
+  2. `llama-index-embeddings-openai`: OpenAI embedding functions
+  3. `llama-index-llms-openai`: OpenAI LLM integration
+  4. `llama-index-vector-stores-lancedb`: LanceDB vector store
+  5. `llama-index-retrievers-bm25`: BM25 retriever implementation
+- Each module needs to be installed separately (e.g., `uv add llama-index-core`)
+
+### Import Patterns
+- Core components use the `llama_index.core` namespace:
+  ```python
+  from llama_index.core import VectorStoreIndex, ServiceContext
+  from llama_index.core.schema import Document, QueryBundle
+  from llama_index.core.retrievers import BaseRetriever
+  ```
+- Component-specific modules are imported from their namespaces:
+  ```python
+  from llama_index.embeddings.openai import OpenAIEmbedding
+  from llama_index.llms.openai import OpenAI
+  from llama_index.vector_stores.lancedb import LanceDBVectorStore
+  ```
+
+### Common Issues
+- Importing from the wrong namespace causes `ModuleNotFoundError`
+- Previously monolithic imports (`from llama_index.xxx`) no longer work
+- Legacy tutorials and examples may use outdated import patterns
+- Module functionality may vary slightly between versions
+- Class names may remain the same but in different modules
+
+### Best Practices
+- Check installed package versions before debugging import errors
+- Use try/except blocks to handle potential missing modules
+- Always check the latest documentation for correct import patterns
+- Use `dir()` or `help()` to inspect module contents when unsure
+- Consider adding aliased imports for backward compatibility in utility code
+
+### Migration Approach
+- For services using LlamaIndex, update imports incrementally
+- Test each component after migration
+- Create a compatibility layer if necessary for backward compatibility
+- Document new import patterns in project READMEs and examples
+
+## LlamaIndex 0.12+ Migration Lessons
+
+### Import Path Changes
+
+LlamaIndex has moved to a modular structure in versions 0.12 and later, requiring changes to import paths and module usage.
+
+### Key Package Changes
+
+The most significant change is the modular structure, where different functionalities are now in separate packages:
+
+- **llama-index-core**: Core functionality (indexes, schema, retrievers)
+- **llama-index-embeddings-***:  Embedding models (OpenAI, HuggingFace, etc.)
+- **llama-index-llms-***:  Language models (OpenAI, DeepSeek, etc.)
+- **llama-index-vector-stores-***:  Vector database integrations
+- **llama-index-readers-***:  Document readers/loaders
+
+### Import Path Changes
+
+Import paths have changed significantly:
+
+1. Base components are now in `llama_index.core`:
+   ```python
+   # Old
+   from llama_index import VectorStoreIndex, ServiceContext
+   # New
+   from llama_index.core import VectorStoreIndex
+   from llama_index.core.settings import Settings  # Replaces ServiceContext
+   ```
+
+2. Embeddings:
+   ```python
+   # Old
+   from llama_index.embeddings.openai import OpenAIEmbedding
+   # New
+   from llama_index.embeddings.openai import OpenAIEmbedding  # Note: requires llama-index-embeddings-openai package
+   ```
+
+3. LLMs:
+   ```python
+   # Old
+   from llama_index.llms.openai import OpenAI
+   # New
+   from llama_index.llms.openai import OpenAI  # Note: requires llama-index-llms-openai package
+   ```
+
+4. Postprocessors:
+   ```python
+   # Old
+   from llama_index.postprocessor import BaseNodePostprocessor
+   # New
+   from llama_index.core.postprocessor.node import BaseNodePostprocessor
+   ```
+
+5. Response schemas:
+   ```python
+   # Old
+   from llama_index.response.schema import Response
+   # New
+   from llama_index.core.response import Response
+   ```
+
+### ServiceContext to Settings Migration
+
+ServiceContext is replaced with the Settings class:
+
+```python
+# Old
+service_context = ServiceContext.from_defaults(
+    llm=OpenAI(model="gpt-4"),
+    embed_model=OpenAIEmbedding(model="text-embedding-ada-002")
+)
+
+# New
+from llama_index.core.settings import Settings
+# Set global settings
+Settings.llm = OpenAI(model="gpt-4")
+Settings.embed_model = OpenAIEmbedding(model="text-embedding-ada-002")
+# Or use local settings
+settings = Settings.from_defaults(
+    llm=OpenAI(model="gpt-4"),
+    embed_model=OpenAIEmbedding(model="text-embedding-ada-002")
+)
+```
+
+### Implementation Details
+
+1. **QueryBundle Class Changes**:
+   - In LlamaIndex 0.12+, the QueryBundle class no longer has a `metadata` attribute
+   - Need to handle metadata externally rather than attaching it to QueryBundle
+
+2. **Response Module Changes**:
+   - Response class moved from `llama_index.response.schema` to `llama_index.core.response`
+   - Format and structure of Response objects remain generally compatible
+
+3. **QueryRouter Implementation**:
+   - The API expectations for QueryRouter changed to support more modular usage
+   - Implementations need to explicitly handle the route_query method with correct parameter ordering
+
+4. **CitationResponseSynthesizer Updates**:
+   - Required implementation of all abstract methods from BaseSynthesizer
+   - Parameter names changed from `base_synthesizer` to `response_synthesizer` in some implementations
+   - Need to implement both synchronous and asynchronous methods
+
+5. **ContextualFormatter API**:
+   - Parameter expectations changed slightly between versions
+   - Methods like format_response need to be called with the correct parameter names
+
+### Testing Considerations
+
+When migrating to LlamaIndex 0.12+, thorough testing is essential:
+
+1. Test all search and retrieval operations
+2. Verify custom components work correctly
+3. Check for missing imports or parameter mismatches 
+4. Test with exact versions of dependencies to ensure consistent behavior
+
+### Common Issues
+
+- `ModuleNotFoundError`: Class may have moved to a different namespace or package
+- `ImportError`: Class may have been renamed or restructured
+- Missing dependencies: Ensure all modular packages are installed
+- Breaking changes in APIs: Some methods and parameters may have changed
+
+### DeepSeek Integration
+
+- DeepSeek LLM integration requires `llama-index-llms-deepseek` package
+- Can be initialized with:
+  ```python
+  from llama_index.llms.deepseek import DeepSeek
+  llm = DeepSeek(model="deepseek-chat", api_key="your-api-key")
+  ```
+- Supports both completion and chat interfaces
+- Can be used as a drop-in replacement for other LLM providers
