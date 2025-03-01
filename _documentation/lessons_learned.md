@@ -306,6 +306,79 @@
   3. Adding try/except blocks around print statements with potential encoding issues
   4. Testing output on multiple platforms and console environments
 
+## Handling Unicode Encoding Issues in Windows
+
+### Problem
+- Windows console and file systems often use limited character encodings (e.g., cp1252, cp437)
+- Special characters, mathematical symbols, and non-Latin characters can cause `UnicodeEncodeError` exceptions
+- Default Python logging handlers don't handle these encoding issues gracefully
+- Console output often shows errors like: `UnicodeEncodeError: 'charmap' codec can't encode character '\u2264' in position 650: character maps to <undefined>`
+
+### Solution
+1. **Custom Logging Handlers**:
+   ```python
+   class UnicodeCompatibleStreamHandler(logging.StreamHandler):
+       def emit(self, record):
+           try:
+               msg = self.format(record)
+               stream = self.stream
+               # Replace problematic characters with their Unicode escape sequences
+               safe_msg = msg.encode('ascii', 'backslashreplace').decode('ascii')
+               stream.write(safe_msg + self.terminator)
+               self.flush()
+           except Exception:
+               self.handleError(record)
+   
+   class UnicodeCompatibleFileHandler(logging.FileHandler):
+       def emit(self, record):
+           try:
+               msg = self.format(record)
+               # Write with UTF-8 encoding and backslashreplace for unsupported chars
+               with codecs.open(self.baseFilename, 'a', encoding='utf-8', errors='backslashreplace') as f:
+                   f.write(msg + self.terminator)
+           except Exception:
+               self.handleError(record)
+   ```
+
+2. **Text Sanitization Function**:
+   ```python
+   def _sanitize_text(self, text):
+       """Sanitize text by handling Unicode characters safely."""
+       if not text:
+           return ""
+           
+       try:
+           # Test if text can be encoded to ASCII
+           text.encode('ascii')
+           return text  # If it works, return original text
+       except UnicodeEncodeError:
+           # Replace non-ASCII characters with their escape sequences
+           text = text.encode('ascii', 'namereplace').decode('ascii')
+           return text
+   ```
+
+3. **Best Practices**:
+   - Use the custom handlers in logging configuration
+   - Apply text sanitization before logging or displaying sensitive content
+   - Separate console logging (which needs sanitization) from file logging (which can use UTF-8)
+   - When working with document text that may contain special characters, always sanitize before processing
+   - For LanceDB and other data stores, convert Pydantic models to dictionaries using `model_dump()`
+   - Apply sanitization to chunk text before generating embeddings
+
+4. **Implementation Strategy**:
+   - Add sanitization early in the processing pipeline
+   - Apply custom logging handlers at initialization
+   - Create separate log files for raw output vs. sanitized console output
+   - Handle encoding errors gracefully with appropriate fallbacks
+   - Test with documents containing diverse characters (math symbols, non-Latin scripts, emojis)
+
+### Critical Code Points for Sanitization
+- Document text processing before embedding generation
+- Logging calls that include document content
+- Console output in interactive applications
+- File operations involving international text
+- Any cross-platform file handling that might encounter Windows charmap limitations
+
 ## LlamaIndex Modular Structure (Version 0.12+)
 
 ### Package Organization

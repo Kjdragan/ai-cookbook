@@ -60,9 +60,17 @@ def semantic_search(query, limit=5, db_path="lancedb_data"):
     start_time = time.time()
     
     try:
-        # Try newer API first
+        # First get the total count for reporting
+        try:
+            total_count = len(table)
+            print(f"Total chunks in database: {total_count}")
+        except Exception:
+            total_count = "unknown"
+            
+        # Perform search with adequate limit to ensure we get enough results
         results = table.search(query_embedding).limit(limit).to_pandas()
-    except AttributeError:
+    except AttributeError as e:
+        print(f"Search API error: {str(e)}")
         # Fall back to older API
         results = table.search(query_embedding).to_pandas().head(limit)
     
@@ -92,24 +100,50 @@ def hybrid_search(text_query, keyword=None, limit=5, db_path="lancedb_data"):
     print(f"\nHybrid search - Text: '{text_query}', Keyword: '{keyword}'")
     
     # Get embedding for query
+    start_time = time.time()
     query_embedding = get_embedding(text_query)
+    embedding_time = time.time() - start_time
+    print(f"Generated embedding in {embedding_time:.2f} seconds")
     
     # Connect to database
     db = lancedb.connect(db_path)
-    table = db.open_table("chunks")
     
-    # Perform hybrid search
-    if keyword:
+    # Check if chunks table exists
+    if "chunks" not in db.table_names():
+        print("Error: 'chunks' table not found in the database")
+        return pd.DataFrame()
+    
+    # Perform search
+    table = db.open_table("chunks")
+    start_time = time.time()
+    
+    try:
+        # First get the total count for reporting
         try:
-            # Try newer API with where clause
-            results = table.search(query_embedding).where(f"text LIKE '%{keyword}%'").limit(limit).to_pandas()
-        except (AttributeError, TypeError):
-            # Fall back: filter after search
-            all_results = table.search(query_embedding).to_pandas()
-            results = all_results[all_results['text'].str.contains(keyword, case=False)].head(limit)
-    else:
-        # Just semantic search
-        results = table.search(query_embedding).limit(limit).to_pandas()
+            total_count = len(table)
+            print(f"Total chunks in database: {total_count}")
+        except Exception:
+            total_count = "unknown"
+            
+        # Perform hybrid search
+        if keyword:
+            try:
+                # Try newer API with where clause
+                results = table.search(query_embedding).where(f"text LIKE '%{keyword}%'").limit(limit).to_pandas()
+            except (AttributeError, TypeError) as e:
+                print(f"Where clause error: {str(e)}")
+                # Fall back: filter after search
+                all_results = table.search(query_embedding).to_pandas()
+                results = all_results[all_results['text'].str.contains(keyword, case=False)].head(limit)
+        else:
+            # Just semantic search
+            results = table.search(query_embedding).limit(limit).to_pandas()
+    except Exception as e:
+        print(f"Search error: {str(e)}")
+        return pd.DataFrame()
+    
+    search_time = time.time() - start_time
+    print(f"Search completed in {search_time:.2f} seconds")
     
     # Format and display results
     for i, row in results.iterrows():
@@ -150,7 +184,12 @@ def get_expanded_context(result_row, context_window=2, db_path="lancedb_data"):
     
     # Query for chunks in the same document with adjacent IDs
     try:
-        all_chunks = table.to_pandas()
+        # First get all chunks with high limit - LanceDB has default limit of 10
+        dummy_vec = [0.0] * 3072  # text-embedding-3-large dimension
+        all_chunks = table.search(dummy_vec).limit(10000).to_pandas()
+        print(f"Retrieved {len(all_chunks)} total chunks to search for adjacent context")
+        
+        # Filter for the document and chunk range we want
         doc_chunks = all_chunks[all_chunks['metadata'].apply(
             lambda x: x['filename'] == filename and 
                       start_chunk <= int(x['chunk_id']) <= end_chunk
@@ -204,7 +243,23 @@ def show_database_stats(db_path="lancedb_data"):
     # Load all chunks
     table = db.open_table("chunks")
     try:
-        chunks = table.to_pandas()
+        # Get the total count directly from the table
+        try:
+            total_count = len(table)
+            print(f"Total Chunks (from table length): {total_count}")
+        except Exception as e:
+            print(f"Could not get table length directly: {str(e)}")
+        
+        # Get all chunks by explicitly setting limit=None to override default limit of 10
+        try:
+            chunks = table.to_pandas(limit=None)
+            print(f"Retrieved {len(chunks)} chunks using to_pandas(limit=None)")
+        except Exception as e:
+            # Fallback to search method if to_pandas with limit=None doesn't work
+            print(f"Error with to_pandas(limit=None): {str(e)}")
+            dummy_vec = [0.0] * 3072  # text-embedding-3-large dimension
+            chunks = table.search(dummy_vec).limit(total_count or 1000000).to_pandas()
+            print(f"Retrieved {len(chunks)} chunks using search with high limit")
         
         # Extract and count unique documents
         documents = [row['metadata']['filename'] for _, row in chunks.iterrows()]
